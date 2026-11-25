@@ -3,7 +3,9 @@
 ;; 런타임: JVM(개발·테스트). 코어는 bb에서도 도는 휴대용 Clojure로 쓴다.
 {:paths ["src" "spec"]
  :deps  {org.clojure/clojure {:mvn/version "1.12.0"}
-         metosin/malli       {:mvn/version "0.17.0"}}
+         metosin/malli       {:mvn/version "0.17.0"}
+         ;; JSON 읽기: bb 내장 cheshire 와 같은 API. data.json 은 bb에서 로드 안 됨(측정)
+         cheshire/cheshire   {:mvn/version "5.13.0"}}
  :aliases
  {:run  {:main-opts ["-m" "wci.cli"]}
   :test {:extra-paths ["test"]
