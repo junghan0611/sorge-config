@@ -1,6 +1,7 @@
 (ns wci.adapter.next-card
   "A deliberately narrow reader for a source-authored NEXT RAIL/NOW card."
-  (:require [clojure.string :as str]
+  (:require [clojure.java.io :as io]
+            [clojure.string :as str]
             [wci.adapter :as adapter]
             [wci.adapter.git-source :as git]
             [wci.adapter.local-process :as process])
@@ -116,13 +117,13 @@
                                    (str (card-locator version path) (when anchor (str "#" anchor))))))))
            distinct))))
 
-(defn- finding [{:keys [text at path repo agents] :as version}]
+(defn- finding [{:keys [text at path root repo agents] :as version}]
   (let [{:keys [rail now heading]} (sections text)
         {:strs [Current Read State Awaits]} (now-fields now)
         title (str/replace heading #"^NOW\s*(?:[—–:-]\s*)?" "")
         state (or State (when (some #(re-find #"^\s*[-*]\s+\[[ xX]\].*\bCURRENT\b" %) rail) "CURRENT"))
         who (get {"human" :human "owner" :owner "external" :external} Awaits)
-        doc-id (when repo (owner-doc-id agents))]
+        doc-id (owner-doc-id agents)]
     (when (or (str/blank? Current) (> (count Current) 200)
               (> (count State) 80) (> (count title) 200) (and Awaits (nil? who)))
       (adapter/fail! :contract "unrecognized or oversized declared NEXT field"))
@@ -136,29 +137,31 @@
       (not (str/blank? state)) (assoc :state {:text state :asserted-by attester})
       who (assoc :awaits {:who who :asserted-by attester})
       doc-id (update :refs conj {:role :contact :label "Ask the repository owner"
-                                 :contact {:address {:kind :repo-owner :repo repo :doc-id doc-id}
+                                 :contact {:address (cond-> {:kind :repo-owner :cwd root :doc-id doc-id}
+                                                      repo (assoc :repo repo))
                                            :scope "Repository handoff and owner document"}}))))
 
 (defn- version [{:keys [root path repo] :or {path "NEXT.md"} :as opts} {:keys [live as-of]}]
-  (let [ctx (git/context opts) common {:root root :path path :repo repo}]
+  (let [ctx (git/context opts)
+        root (.getCanonicalPath (io/file root))
+        common {:root root :path path :repo repo}]
+    (git/require-working-root! ctx)
     (if live
-      (do
-        (git/require-working-root! ctx)
-        (let [text (or (live-file root path) (adapter/fail! :unreadable "NEXT working file is missing"))
-              tip (:tip ctx)
-              ;; Only a byte-for-byte matching committed version can attest a commit time.
-              at (when (= text (git/file-at ctx tip path)) (git/file-change-at ctx tip path))]
-          (when (and at (not (git/before? at as-of)))
-            (adapter/fail! :unsupported-time "NEXT recording time does not precede the knowledge cut"))
-          (assoc common :text text :at at :agents (when repo (live-file root "AGENTS.md")))))
+      (let [text (or (live-file root path) (adapter/fail! :unreadable "NEXT working file is missing"))
+            tip (:tip ctx)
+            ;; Only a byte-for-byte matching committed version can attest a commit time.
+            at (when (= text (git/file-at ctx tip path)) (git/file-change-at ctx tip path))]
+        (when (and at (not (git/before? at as-of)))
+          (adapter/fail! :unsupported-time "NEXT recording time does not precede the knowledge cut"))
+        (assoc common :text text :at at :agents (live-file root "AGENTS.md")))
       (let [{:keys [oid]} (git/first-parent-at ctx as-of)
             text (or (git/file-at ctx oid path)
                      (adapter/fail! :unsupported-time "NEXT was not recorded in the selected past tree"))]
         (assoc common :oid oid :text text :at (git/file-change-at ctx oid path)
-               :agents (when repo (git/file-at ctx oid "AGENTS.md")))))))
+               :agents (git/file-at ctx oid "AGENTS.md"))))))
 
 (defmethod adapter/describe :next-card [{:keys [title opts]}]
-  (git/context opts)
+  (git/require-working-root! (git/context opts))
   {:kind "next-card" :title (or title "Repository handoff card")
    :as-of-support :replay :question :keyword
    :attests #{:source :gist :state :awaits} :contact-liveness :none})

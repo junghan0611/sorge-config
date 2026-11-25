@@ -112,8 +112,12 @@
        (is (= "2026-11-16T22:00:00+09:00" (get-in item [:times :source])))
        (is (str/ends-with? (:locator record) (str "@" old ":NEXT.md")))
        (is (str/ends-with? (:locator read) (str "@" old ":docs/old-guide.md")))
-       (is (= {:kind :repo-owner :repo "fixture/sample" :doc-id "20000101T000000"}
+       (is (= {:kind :repo-owner :cwd (.getCanonicalPath root)
+               :repo "fixture/sample" :doc-id "20000101T000000"}
               (get-in contact [:contact :address])))
+       (let [no-slug (adapter/answer (update cfg :opts dissoc :repo) past)]
+         (is (= {:kind :repo-owner :cwd (.getCanonicalPath root) :doc-id "20000101T000000"}
+                (get-in no-slug [:findings 0 :refs 2 :contact :address]))))
        (is (= 3 (count (:refs item))))
        (is (= "2026-11-24T09:00:00+09:00" (get-in committed [:times :source])))
        (is (= :unsupported-time (fails-with #(adapter/answer cfg (assoc past :as-of "2026-11-16T22:00:00+09:00")))))
