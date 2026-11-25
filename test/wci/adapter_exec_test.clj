@@ -111,6 +111,39 @@
       (is (= 3 (:wci/exit-code
                 (failure-data #(config/validate-config (assoc-in @cfg-doc [:channels 0 :opts k] v)))))))))
 
+(deftest flow-summary-is-one-line-with-bounded-live-history
+  (let [row (fn [id at] {:id id :title (str "Source item " id) :at at})
+        source [(row "latest" "2026-11-26T08:00:00+09:00")
+                (row "old" "2026-11-12T09:29:59+09:00")
+                (row "lower" "2026-11-12T09:30:00+09:00")
+                (row "cut" (:as-of live))]
+        config (fn [argv] {:channels [{:id "flow" :kind :exec :title "Synthetic flow"
+                                      :opts {:argv argv :rows-path [] :attests #{:source} :overview :summary
+                                             :finding [:assemble {:key [:get ["id"]] :title [:get ["title"]]
+                                                                  :times [:assemble {:source [:kst [:get ["at"]]]}]
+                                                                  :refs [:literal []]}]}}]})
+        run-opts {:now (:as-of live) :token-secret "test-secret-0123456789"}]
+    (with-fake-cli
+     (json/generate-string source)
+     (fn [program argv]
+       (let [cfg (config/validate-config (config argv))
+             r (core/run cfg {:op :overview} run-opts)
+             [line] (:findings r)
+             ref (get-in line [:refs 0 :ref])
+             follow (core/run cfg {:op :follow :ref ref} run-opts)]
+         (is (= [:success 1 "Synthetic flow"] [(:outcome r) (count (:findings r)) (:title line)]))
+         (is (= "2 in the last 14 days (returned rows)" (get-in line [:gist :text])))
+         (is (= {:last-movement "2026-11-26T08:00:00+09:00"} (:times line)))
+         (is (= [:history false] ((juxt :role :terminal) (first (:refs line)))))
+         (is (= ["Source item latest" "Source item lower" "Source item old"] (mapv :title (:findings follow))))
+         (fake-output! program "[]")
+         (let [empty-line (first (:findings (core/run cfg {:op :overview} run-opts)))]
+           (is (= "0 in the last 14 days (returned rows)" (get-in empty-line [:gist :text])))
+           (is (= {} (:times empty-line))))
+         (fake-output! program (json/generate-string source))
+         (let [channel (assoc-in (first (:channels cfg)) [:opts :finding 1 :times] [:literal {}])]
+           (is (= :contract (:wci/error-kind (failure-data #(adapter/answer channel live)))))))))))
+
 (deftest guards-project-only-source-authorized-fields
   (let [rows [{:id "missing"} {:id "null" :value nil} {:id "false" :value false}
               {:id "other" :value "accepted-state"} {:id "true" :value true :link "https://feed.invalid/item"}]

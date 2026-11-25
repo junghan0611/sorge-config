@@ -8,7 +8,8 @@
             [wci.adapter :as adapter]
             [wci.adapter.edn-io :as edn-io]
             [wci.adapter.local-json :as json]
-            [wci.adapter.local-process :as process])
+            [wci.adapter.local-process :as process]
+            [wci.time :as time])
   (:import [java.time DateTimeException LocalDate OffsetDateTime ZoneOffset]
            [java.time.format DateTimeFormatter]))
 
@@ -47,6 +48,7 @@
    [:argv argv-schema]
    [:attests [:set :wci/attest]]
    [:rows-path json-path]
+   [:overview {:optional true} [:= :summary]]
    [:finding [:tuple [:= :assemble]
               [:map {:closed true}
                [:key expression] [:title expression] [:times expression] [:refs expression]
@@ -153,15 +155,46 @@
   {:kind "exec" :title (or title "Local JSON reader")
    :as-of-support :live-only :question :none :attests (:attests opts) :contact-liveness :none})
 
-(defmethod adapter/answer :exec [{:keys [opts]} {:keys [mode] :as req}]
-  (let [result (mapped-answer opts req)]
-    (if (= :question mode)
-      (assoc result :findings [] :uninterpreted {:reason "fixed argv source does not accept free-text questions"})
-      (assoc result :matched-by "fixed local argv; live JSON mapping only"))))
+;; Mapped source keys are strings/integers, so these cannot collide with one.
+(def ^:private summary-key [:exec/summary])
+(def ^:private history-key [:exec/history])
 
-(defmethod adapter/expand :exec [{:keys [opts]} key req]
-  (let [result (mapped-answer opts req)
-        hits (filterv #(= key (:key %)) (:findings result))]
-    (if (seq hits)
-      (assoc result :findings hits)
-      (adapter/fail! :ref-gone "mapped source key is no longer present"))))
+(defn- flow-rows [findings as-of]
+  (let [cut (time/point-start as-of)]
+    (into []
+          (comp (map (fn [row]
+                       (let [at (get-in row [:times :source])]
+                         (when-not (m/validate (:point @schemas) at)
+                           (adapter/fail! :contract "flow summary requires a source point for every row"))
+                         {:row row :at at :ms (time/point-start at)})))
+                (filter #(< (:ms %) cut)))
+          findings)))
+
+(defn- flow-summary [cfg {:keys [as-of horizon-days]} {:keys [findings]}]
+  (let [rows (flow-rows findings as-of)
+        lower (time/shift-days (time/point-start as-of) (- horizon-days))
+        recent (count (filter #(<= lower (:ms %)) rows))
+        latest (when (seq rows) (:at (apply max-key :ms rows)))]
+    {:matched-by "fixed local argv; count within the returned source window"
+     :findings [{:key summary-key :title (or (:title cfg) "Local JSON reader")
+                 :times (cond-> {} latest (assoc :last-movement latest))
+                 :gist {:text (str recent " in the last " horizon-days " days (returned rows)")
+                        :asserted-by "Local JSON source"}
+                 :refs [{:role :history :label "Open source history" :key history-key}]}]}))
+
+(defmethod adapter/answer :exec [{:keys [opts] :as cfg} {:keys [mode] :as req}]
+  (let [result (mapped-answer opts req)]
+    (cond
+      (= :question mode)
+      (assoc result :findings [] :uninterpreted {:reason "fixed argv source does not accept free-text questions"})
+      (and (= :overview mode) (= :summary (:overview opts))) (flow-summary cfg req result)
+      :else (assoc result :matched-by "fixed local argv; live JSON mapping only"))))
+
+(defmethod adapter/expand :exec [{:keys [opts]} key {:keys [as-of] :as req}]
+  (let [result (mapped-answer opts req)]
+    (if (and (= :summary (:overview opts)) (= history-key key))
+      (assoc result :findings (mapv :row (flow-rows (:findings result) as-of)))
+      (let [hits (filterv #(= key (:key %)) (:findings result))]
+        (if (seq hits)
+          (assoc result :findings hits)
+          (adapter/fail! :ref-gone "mapped source key is no longer present"))))))
