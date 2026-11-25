@@ -144,6 +144,27 @@
          (let [channel (assoc-in (first (:channels cfg)) [:opts :finding 1 :times] [:literal {}])]
            (is (= :contract (:wci/error-kind (failure-data #(adapter/answer channel live)))))))))))
 
+(deftest sender-projection-carries-only-the-display-name
+  (let [src [{:id "a" :label "Sample" :origin {:person {:display "Casey Example" :address "hidden@example.invalid" :id "hidden-id"}}}
+             {:id "b" :label "No author" :origin {:person {:display nil}}}
+             {:id "c" :label "Missing author"}]
+        display [:get ["origin" "person" "display"] :optional]
+        finding [:assemble {:key [:get ["id"]] :title [:get ["label"]] :times [:literal {}] :refs [:literal []]
+                            :by [:when-present display display]
+                            :state [:literal {:text "Recorded" :asserted-by "Synthetic register"}]}]]
+    (with-fake-cli
+     (json/generate-string src)
+     (fn [_ argv]
+       (let [cfg (config/validate-config
+                  {:channels [{:id "authored" :kind :exec
+                               :opts {:argv argv :rows-path [] :attests #{:state} :finding finding}}]})
+             r (core/run cfg {:op :overview} {:now (:as-of live) :token-secret "test-secret-0123456789"})
+             rendered (core/->json r)]
+         (is (= :success (:outcome r)))
+         (is (= ["Casey Example"] (into [] (keep :by) (:findings r))))
+         (is (not (str/includes? rendered "hidden@example.invalid")))
+         (is (not (str/includes? rendered "hidden-id"))))))))
+
 (deftest guards-project-only-source-authorized-fields
   (let [rows [{:id "missing"} {:id "null" :value nil} {:id "false" :value false}
               {:id "other" :value "accepted-state"} {:id "true" :value true :link "https://feed.invalid/item"}]

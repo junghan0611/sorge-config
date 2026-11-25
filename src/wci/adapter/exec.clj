@@ -53,6 +53,7 @@
               [:map {:closed true}
                [:key expression] [:title expression] [:times expression] [:refs expression]
                [:gist {:optional true} expression] [:awaits {:optional true} expression]
+               [:by {:optional true} expression]
                [:area {:optional true} expression] [:state {:optional true} expression]]]]
    [:data-through {:optional true} expression]])
 
