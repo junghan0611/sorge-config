@@ -46,6 +46,7 @@
     (is (= [{:kind :unreadable :channel "notes"}] (mapv #(select-keys % [:kind :channel]) (:failures r))))
     (is (= {:exclude ["notes"]} (:retry r)))
     (is (every? #(= "tracker" (:channel %)) (get-in r [:partial :findings])))
+    (is (false? (get-in r [:partial :truncated])) "all tracker evidence fits the default budget")
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"unreadable notes" (w/ok! r)))
     (testing "the retry it suggests succeeds"
       (is (= :success (:outcome (w/overview (c broken) {:exclude ["notes"]})))))))

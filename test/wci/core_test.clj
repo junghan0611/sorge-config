@@ -54,6 +54,11 @@
     (testing "I4: no finding or same-as reference into the failed channel"
       (is (= ["a"] (mapv :channel (get-in r [:partial :findings]))))
       (is (= [:more] (mapv :role (get-in r [:partial :findings 0 :refs])))))
+    (testing "partial evidence trimmed by the budget says so"
+      (let [many (ch "a" (mapv #(f (str "m" %)) (range 6)))
+            t    (run [many b] {:op :overview :budget {:max-items 2}})]
+        (is (= 2 (count (get-in t [:partial :findings]))))
+        (is (true? (get-in t [:partial :truncated])))))
     (testing "every failure is listed, not just the first"
       (let [c (ch "c" nil {:opts {:answer (fn [_] (adapter/fail! :unreadable "no"))}})]
         (is (= [:unreadable :unreadable] (kinds (run [a b c] {:op :overview}))))

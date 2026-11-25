@@ -363,7 +363,8 @@
                                      " bytes; max-bytes is " max-bytes)))))))
 
 (defn- error-envelope
-  "실패 목록은 자르지 않는다. :partial 만 예산에 맞춰 줄이고, 안 맞으면 뺀다."
+  "실패 목록은 자르지 않는다. :partial 만 예산에 맞춰 줄이고(:truncated 로 밝힌다),
+  그래도 안 맞으면 통째로 뺀다."
   [ctx {:keys [as-of live observed failures retry partial budget order]}]
   (let [{:keys [max-items max-bytes]} (budget-of budget)
         base (cond-> {:spec-version spec/version
@@ -376,9 +377,10 @@
       base
       (let [cut   {:as-of as-of :live live}
             items (:items partial)
-            with  (fn [n] (assoc base :partial {:coverage (:coverage partial)
-                                                :findings (mapv #(wire-finding ctx cut %)
-                                                                (subvec items 0 n))}))]
+            with  (fn [n] (assoc base :partial {:coverage  (:coverage partial)
+                                                :findings  (mapv #(wire-finding ctx cut %)
+                                                                 (subvec items 0 n))
+                                                :truncated (< n (count items))}))]
         (loop [n (min max-items (count items))]
           (let [env (with n)]
             (cond
@@ -603,8 +605,7 @@
                                       :as-of-support    (:as-of-support desc)
                                       :question         (:question desc)
                                       :attests          (:attests desc)
-                                      :contact-liveness (:contact-liveness desc)
-                                      :status           :ready}
+                                      :contact-liveness (:contact-liveness desc)}
                                (:source-tz desc) (assoc :source-tz (:source-tz desc))))
                            res)})))
 

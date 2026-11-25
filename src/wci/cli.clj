@@ -7,8 +7,8 @@
     follow REF [--max-items N] [--max-bytes N]
     공통: --config PATH (기본 ./channels.local.edn)
 
-  exit (spec 머리 주석): 0 success · 1 에러 봉투 · 2 호출 위반(인자, :bad-request) · 3 설정/IO.
-  코어 자가검증(I1–I8) 실패도 3 으로 간다 — 봉투가 아니라 코어 버그다 (stderr)."
+  exit (spec 머리 주석): 0 success · 1 에러 봉투 · 2 호출 위반(인자, :bad-request) · 3 설정/IO ·
+  4 코어 불변식 위반 — 봉투가 아니라 코어 버그다 (stderr)."
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [wci.core :as core]
@@ -86,7 +86,7 @@
         (cond
           (::usage d)          [2 (core/->json (bad-request-envelope (ex-message e))) nil]
           (:wci/exit-code d)   [(:wci/exit-code d) nil (str "wci: " (ex-message e))]
-          (:wci/internal d)    [3 nil (str "wci internal invariant " (:wci/internal d) ": " (ex-message e))]
+          (:wci/internal d)    [4 nil (str "wci internal invariant " (:wci/internal d) ": " (ex-message e))]
           :else                [3 nil (str "wci: " (ex-message e))])))))
 
 (defn -main [& args]
