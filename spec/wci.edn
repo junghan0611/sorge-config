@@ -1,5 +1,5 @@
 ;; =============================================================================
-;; spec/wci.edn — work-context interface (v0.2.4-draft)
+;; spec/wci.edn — work-context interface (v0.2.5-draft)
 ;; =============================================================================
 ;;
 ;; 이 EDN 하나가 SSOT다. md로 따로 쓰지 않는다. 설명은 주석에 둔다.
@@ -61,7 +61,7 @@
 ;;   - 정렬 체인 끝은 항상 [:channel :asc] [:key :asc] (:key = 정규화 EDN 문자열).
 ;;   - 이어받기는 커서(마지막 항목의 정렬값). live 요청은 다시 읽고, 과거 as-of 는 유지.
 ;;     남은 항목이 있는데 예산에 0개만 들어가면 :budget-too-small.
-;;   - 미래 :as-of 는 :bad-request. :retry exclude 는 채널 실패에만.
+;;   - 미래 :as-of 는 :bad-request. :retry 는 채널 실패에만 붙는다.
 ;;   - 토큰 키: 설정 :token 또는 env WCI_TOKEN_KEY(≥16자)의 SHA-256. 없으면 기동 에러.
 ;;
 ;; 질문을 받는 방식 (:question, v0.2.2):
@@ -75,7 +75,7 @@
 ;; CLI exit: 0 success · 1 error 봉투 · 2 호출 위반 · 3 설정/IO · 4 코어 불변식 위반(버그, stderr)
 ;; =============================================================================
 
-{:spec-version "0.2.4-draft"
+{:spec-version "0.2.5-draft"
 
  :constants
  {:overview-horizon-days 14       ;; overview: as-of 앞뒤 이 범위의 움직임·예정
@@ -305,8 +305,10 @@
                 [:kind :wci/error-kind]
                 [:channel {:optional true} :wci/channel-id]
                 [:message [:string {:max 300}]]]]]
+   ;; :retry 는 다시 보낼 scope 를 통째로 준다(v0.2.5). 호출자는 그대로 붙여 다시 부른다.
+   ;; 원 요청이 :include 를 썼으면 실패 채널을 include 에서 빼고, 아니면 exclude 에 더한 결과다.
    [:retry {:optional true}
-    [:map {:closed true} [:exclude [:vector {:min 1} :wci/channel-id]]]]
+    [:map {:closed true} [:scope :wci/scope]]]
    [:partial {:optional true}
     [:map {:closed true}
      [:coverage [:vector :wci/coverage]]
