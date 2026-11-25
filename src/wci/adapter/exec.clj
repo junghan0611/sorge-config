@@ -1,15 +1,13 @@
 (ns wci.adapter.exec
   "Trusted local argv -> bounded JSON -> a closed WCI finding. No evaluator or shell."
-  (:require [cheshire.core :as json]
-            [cheshire.factory :as json-factory]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [malli.core :as m]
             [wci.adapter :as adapter]
             [wci.adapter.edn-io :as edn-io]
+            [wci.adapter.local-json :as json]
             [wci.adapter.local-process :as process])
-  (:import [java.io BufferedReader StringReader]
-           [java.time DateTimeException LocalDate OffsetDateTime ZoneOffset]
+  (:import [java.time DateTimeException LocalDate OffsetDateTime ZoneOffset]
            [java.time.format DateTimeFormatter]))
 
 (def ^:private json-path
@@ -96,37 +94,6 @@
                                    (when-not (identical? missing v) [k v])))) arg)
                 (into [] (remove #(identical? missing %)) (map #(project data %) arg)))))
 
-(defn- check-depth! [^String text]
-  ;; Limit recursive decoder depth without mistaking a quoted bracket for a new object.
-  (loop [i 0, depth 0, quoted? false, escaped? false]
-    (when (< i (.length text))
-      (let [c (.charAt text i) next-i (inc i)]
-        (cond
-          escaped? (recur next-i depth quoted? false)
-          (and quoted? (= \\ c)) (recur next-i depth true true)
-          (= \" c) (recur next-i depth (not quoted?) false)
-          quoted? (recur next-i depth true false)
-          (or (= \[ c) (= \{ c))
-          (do (when (>= depth 64) (adapter/fail! :contract "local JSON nesting exceeds its limit"))
-              (recur next-i (inc depth) false false))
-          (or (= \] c) (= \} c)) (recur next-i (dec depth) false false)
-          :else (recur next-i depth false false))))))
-
-(def ^:private strict-json
-  (delay (json-factory/make-json-factory {:strict-duplicate-detection true})))
-
-(defn- parse-json [text]
-  (check-depth! text)
-  (try
-    (binding [json-factory/*json-factory* @strict-json]
-      (with-open [r (BufferedReader. (StringReader. text))]
-        (let [values (seq (json/parsed-seq r))]
-          (when (or (nil? values) (next values))
-            (adapter/fail! :contract "local reader must emit exactly one JSON value"))
-          (first values))))
-    (catch clojure.lang.ExceptionInfo e (throw e))
-    (catch Exception _ (adapter/fail! :contract "local reader stdout is not valid JSON"))))
-
 (defn- row-roles [result]
   (concat (keys (:times result)) (filter #(contains? result %) [:awaits :area :gist :state])))
 
@@ -141,7 +108,7 @@
               (System/getenv "PATH") (assoc "PATH" (System/getenv "PATH")))
         {:keys [exit stdout]} (process/execute! argv (constantly true) env)]
     (when-not (zero? exit) (adapter/fail! :unreadable "local JSON reader exited unsuccessfully"))
-    (let [doc (parse-json stdout)
+    (let [doc (json/parse-one stdout)
           rows (lookup doc rows-path)
           bound (if data-through (project doc data-through) missing)]
       (when-not (vector? rows) (adapter/fail! :contract "mapped JSON rows must be an array"))

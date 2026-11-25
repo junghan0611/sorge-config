@@ -1,0 +1,7 @@
+;; Two synthetic channels. Only private machine-local config specifies the installed program.
+;; An additional Claude channel uses a different id and :track {:axis :sessions :source :claude}.
+{:channels
+ [{:id "synthetic-sessions" :kind :semantic-memory
+   :opts {:program "/synthetic/semantic-reader" :track {:axis :sessions :source :pi} :limit 5}}
+  {:id "synthetic-garden" :kind :semantic-memory
+   :opts {:program "/synthetic/semantic-reader" :track {:axis :garden} :limit 5}}]}
