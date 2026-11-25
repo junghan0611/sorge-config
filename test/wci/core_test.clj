@@ -93,6 +93,15 @@
     (is (= :ok (status (with "2026-11-26") "a")) "a day reaches its end")
     (is (= :ok (status (with "2026-11-26T09:00+09:00") "a")))))
 
+(deftest the-as-of-judged-is-the-as-of-sent
+  (let [seen (atom nil)
+        a (ch "a" nil {:opts {:answer (fn [req] (reset! seen (:as-of req))
+                                        {:findings [] :data-through (:as-of req)})}})
+        r (core/run {:channels [a]} {:op :ask :where [[:last-movement :before -7]]}
+                    (assoc opts :now (+ (t/parse-kst now) 734)))]
+    (is (= now @seen (:as-of r)) "the wire carries seconds; the core judges with the same instant")
+    (is (= :empty (status r "a")) "a channel that reaches the as-of it was given is not stale")))
+
 (deftest predicates-are-strict-and-day-aware
   (let [items [(f "edge" :times {:last-movement "2026-11-19T09:00:00+09:00"})
                (f "in" :times {:last-movement "2026-11-19T08:59:59+09:00"})

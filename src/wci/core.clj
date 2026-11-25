@@ -673,12 +673,16 @@
 
 ;; ───────────────────────── 입구 ─────────────────────────
 
-(defn- now-of [opts]
-  (let [n (:now opts)]
-    (cond (nil? n)    (t/now-ms)
-          (int? n)    n
-          (string? n) (t/point-start n)
-          :else (throw (ex-info ":now must be KST text or epoch ms" {:wci/exit-code 3})))))
+(defn- now-of
+  "지금 = 초 단위로 내림한 ms. 선(wire)의 KST 는 초까지만 싣는다. 코어가 밀리초로 판정하면
+  채널이 받은 as-of 와 코어가 판정한 as-of 가 달라진다 — 그 시각까지 읽은 채널이 :stale 로 보인다."
+  [opts]
+  (let [n (:now opts)
+        ms (cond (nil? n)    (t/now-ms)
+                 (int? n)    n
+                 (string? n) (t/point-start n)
+                 :else (throw (ex-info ":now must be KST text or epoch ms" {:wci/exit-code 3})))]
+    (- ms (mod ms 1000))))
 
 (defn context
   "config + opts → 실행 문맥. 키가 없으면 여기서 터진다 (기동 에러).
