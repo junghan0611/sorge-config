@@ -1,0 +1,26 @@
+;; babashka — code mode 런타임 (GLG 결정 2026-11-26). 개발·테스트 기준은 여전히 JVM deps.edn.
+;; 같은 src/spec 를 두 런타임이 읽는다. 코어·client·cli 는 양쪽에서 같은 테스트로 green 이어야 한다.
+;;   bb wci overview --config channels.local.edn
+;;   bb test                       ; test/ 아래 모든 *_test 네임스페이스
+;;   bb test wci.core-test         ; 고른 네임스페이스만
+{:paths ["src" "spec"]
+ :deps  {metosin/malli {:mvn/version "0.17.0"}}
+ :tasks
+ {wci  {:doc  "work-context interface CLI: channels | overview | ask | follow (JSON on stdout)"
+        :task (apply (requiring-resolve 'wci.cli/-main) *command-line-args*)}
+  test {:doc         "clojure.test under babashka. Args: namespaces (default: every test/**/*_test.clj)"
+        :extra-paths ["test"]
+        :requires    ([babashka.fs :as fs]
+                      [clojure.string :as str]
+                      [clojure.test :as t])
+        :task        (let [nss (or (seq (map symbol *command-line-args*))
+                                   (->> (fs/glob "test" "**_test.clj")
+                                        (map (fn [p] (-> (str (fs/relativize "test" p))
+                                                  (str/replace (re-pattern "[.]clj$") "")
+                                                  (str/replace "/" ".")
+                                                  (str/replace "_" "-")
+                                                  symbol)))
+                                        sort))]
+                       (apply require nss)
+                       (let [{:keys [fail error]} (apply t/run-tests nss)]
+                         (System/exit (if (zero? (+ fail error)) 0 1))))}}}
