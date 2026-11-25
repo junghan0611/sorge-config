@@ -1,5 +1,5 @@
 ;; =============================================================================
-;; spec/wci.edn — work-context interface (v0.2.1-draft)
+;; spec/wci.edn — work-context interface (v0.2.2-draft)
 ;; =============================================================================
 ;;
 ;; 이 EDN 하나가 SSOT다. md로 따로 쓰지 않는다. 설명은 주석에 둔다.
@@ -57,11 +57,18 @@
 ;;   - 미래 :as-of 는 :bad-request. :retry exclude 는 채널 실패에만.
 ;;   - 토큰 키: 설정 :token 또는 env WCI_TOKEN_KEY(≥16자)의 SHA-256. 없으면 기동 에러.
 ;;
+;; 질문을 받는 방식 (:question, v0.2.2):
+;;   :keyword   제목 키워드 매칭
+;;   :semantic  의미 검색 색인(세션·가든 등). 이웃은 존재 증명이 아니다 — hit 는
+;;              :record ref 로 원래 자리(파일:줄, 노트 id)를 가리키고, 판정은 원문에서.
+;;              :matched-by 에 색인 이름·모델을, :data-through 에 색인 최신 시각을 밝힌다.
+;;   :none      질문을 해석하지 않는다 → :uninterpreted
+;;
 ;; 버전 정책: v0.x 호환 보장 없음. 응답마다 :spec-version 정확히.
 ;; CLI exit: 0 success · 1 error 봉투 · 2 호출 위반 · 3 설정/IO · 4 코어 불변식 위반(버그, stderr)
 ;; =============================================================================
 
-{:spec-version "0.2.1-draft"
+{:spec-version "0.2.2-draft"
 
  :constants
  {:overview-horizon-days 14       ;; overview: as-of 앞뒤 이 범위의 움직임·예정
@@ -297,7 +304,7 @@
    [:kind :string]
    [:title :string]
    [:as-of-support [:enum :replay :live-only]]
-   [:question [:enum :keyword :none]]
+   [:question [:enum :keyword :semantic :none]]
    [:attests [:set :wci/attest]]
    [:contact-liveness [:enum :show :hide :none]]
    [:source-tz {:optional true} :string]]
@@ -326,7 +333,7 @@
    [:kind :string]
    [:title :string]
    [:as-of-support [:enum :replay :live-only]]
-   [:question [:enum :keyword :none]]
+   [:question [:enum :keyword :semantic :none]]
    [:attests [:set :wci/attest]]
    [:contact-liveness [:enum :show :hide :none]]
    [:source-tz {:optional true} :string]]
