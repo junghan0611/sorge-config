@@ -53,6 +53,7 @@
    [:attests [:set :wci/attest]]
    [:rows-path json-path]
    [:overview {:optional true} [:= :summary]]
+   [:summary {:optional true} [:map {:closed true} [:timeless [:= :keep]]]]
    [:allowed-json-keys {:optional true} json-keys-schema]
    [:drop-json-keys {:optional true} json-keys-schema]
    [:finding [:tuple [:= :assemble]
@@ -186,26 +187,32 @@
 (def ^:private summary-key [:exec/summary])
 (def ^:private history-key [:exec/history])
 
-(defn- flow-rows [findings as-of]
+(defn- keep-timeless? [opts] (= :keep (get-in opts [:summary :timeless])))
+
+(defn- flow-rows [opts findings as-of]
   (let [cut (time/point-start as-of)]
     (into []
-          (comp (map (fn [row]
-                       (let [at (get-in row [:times :source])]
-                         (when-not (m/validate (:point @schemas) at)
-                           (adapter/fail! :contract "flow summary requires a source point for every row"))
-                         {:row row :at at :ms (time/point-start at)})))
-                (filter #(< (:ms %) cut)))
+          (comp (map (fn [{:keys [times] :as row}]
+                       (let [at (:source times)]
+                         (cond
+                           (and (keep-timeless? opts) (empty? times)) {:row row}
+                           (m/validate (:point @schemas) at) {:row row :at at :ms (time/point-start at)}
+                           :else (adapter/fail! :contract "flow summary requires a source point for every dated row")))))
+                (filter #(or (nil? (:ms %)) (< (:ms %) cut))))
           findings)))
 
-(defn- flow-summary [cfg {:keys [as-of horizon-days]} {:keys [findings]}]
-  (let [rows (flow-rows findings as-of)
+(defn- flow-summary [{:keys [opts] :as cfg} {:keys [as-of horizon-days]} {:keys [findings]}]
+  (let [rows (flow-rows opts findings as-of)
+        dated (filterv #(contains? % :ms) rows)
         lower (time/shift-days (time/point-start as-of) (- horizon-days))
-        recent (count (filter #(<= lower (:ms %)) rows))
-        latest (when (seq rows) (:at (apply max-key :ms rows)))]
+        recent (count (filter #(<= lower (:ms %)) dated))
+        latest (when (seq dated) (:at (apply max-key :ms dated)))
+        undated (- (count rows) (count dated))]
     {:matched-by "fixed local argv; count within the returned source window"
      :findings [{:key summary-key :title (or (:title cfg) "Local JSON reader")
                  :times (cond-> {} latest (assoc :last-movement latest))
-                 :gist {:text (str recent " in the last " horizon-days " days (returned rows)")
+                 :gist {:text (str recent " in the last " horizon-days " days (returned rows)"
+                                  (when (keep-timeless? opts) (str " · " undated " without a timestamp")))
                         :asserted-by "Local JSON source"}
                  :refs [{:role :history :label "Open source history" :key history-key}]}]}))
 
@@ -220,7 +227,7 @@
 (defmethod adapter/expand :exec [{:keys [opts]} key {:keys [as-of] :as req}]
   (let [result (mapped-answer opts req)]
     (if (and (= :summary (:overview opts)) (= history-key key))
-      (assoc result :findings (mapv :row (flow-rows (:findings result) as-of)))
+      (assoc result :findings (mapv :row (flow-rows opts (:findings result) as-of)))
       (let [hits (filterv #(= key (:key %)) (:findings result))]
         (if (seq hits)
           (assoc result :findings hits)

@@ -144,6 +144,32 @@
          (let [channel (assoc-in (first (:channels cfg)) [:opts :finding 1 :times] [:literal {}])]
            (is (= :contract (:wci/error-kind (failure-data #(adapter/answer channel live)))))))))))
 
+(deftest flow-summary-timeless-opt-discloses-and-keeps-untimed-rows
+  (let [rows [{:id "known" :at "2026-11-26T08:00:00+09:00"} {:id "unknown" :at nil}]
+        at [:get ["at"] :optional]
+        opts {:now (:as-of live) :token-secret "test-secret-0123456789"}]
+    (with-fake-cli
+     (json/generate-string rows)
+     (fn [program argv]
+       (let [cfg (config/validate-config
+                  {:channels [{:id "timeless-flow" :kind :exec
+                               :opts {:argv argv :overview :summary :summary {:timeless :keep}
+                                      :rows-path [] :attests #{:source}
+                                      :finding [:assemble {:key [:get ["id"]] :title [:get ["id"]] :refs [:literal []]
+                                                           :times [:assemble {:source [:when-present at [:kst at]]}]}]}}]})
+             overview (fn [c] (core/run c {:op :overview} opts))
+             row (first (:findings (overview cfg)))
+             history (core/run cfg {:op :follow :ref (get-in row [:refs 0 :ref])} opts)]
+         (is (= "1 in the last 14 days (returned rows) · 1 without a timestamp" (get-in row [:gist :text])))
+         (is (= {:last-movement "2026-11-26T08:00:00+09:00"} (:times row)))
+         (is (= [["known" {:source "2026-11-26T08:00:00+09:00"}] ["unknown" {}]]
+                (mapv (juxt :title :times) (:findings history))))
+         (is (= [:contract] (mapv :kind (:failures (overview (update-in cfg [:channels 0 :opts] dissoc :summary))))))
+         (fake-output! program (json/generate-string [(second rows)]))
+         (let [row (first (:findings (overview cfg)))]
+           (is (= "0 in the last 14 days (returned rows) · 1 without a timestamp" (get-in row [:gist :text])))
+           (is (= {} (:times row)))))))))
+
 (deftest sender-projection-carries-only-the-display-name
   (let [src [{:id "a" :label "Sample" :origin {:person {:display "Casey Example" :address "hidden@example.invalid" :id "hidden-id"}}}
              {:id "b" :label "No author" :origin {:person {:display nil}}}
