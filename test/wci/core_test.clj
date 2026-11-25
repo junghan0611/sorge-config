@@ -182,6 +182,10 @@
           t2 (get-in (run [gone] {:op :overview}) [:findings 0 :refs 0 :ref])]
       (is (= [:ref-gone] (kinds (run [gone] {:op :follow :ref t2})))))))
 
+(deftest by-passes-through-untouched
+  (let [r (run [(ch "a" [(f "m" :by "Sample Sender")])] {:op :overview})]
+    (is (= "Sample Sender" (get-in r [:findings 0 :by])))))
+
 (deftest overview-keeps-standing-assertions
   (let [old-ts {:source "2026-09-01T10:00+09:00"}
         items [(f "log" :times old-ts)

@@ -338,7 +338,8 @@
     (:gist finding)   (assoc :gist (:gist finding))
     (:awaits finding) (assoc :awaits (:awaits finding))
     (:state finding)  (assoc :state (:state finding))
-    (:area finding)   (assoc :area (:area finding))))
+    (:area finding)   (assoc :area (:area finding))
+    (:by finding)     (assoc :by (:by finding))))
 
 ;; ───────────────────────── 봉투 ─────────────────────────
 

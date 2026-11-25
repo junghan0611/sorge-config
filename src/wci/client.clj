@@ -162,6 +162,7 @@
                      (str/join ", " (map :channel cs))))
         line  (fn [f]
                 (str (:title f)
+                     (when-let [b (:by f)] (str " — " b))
                      (when as-of
                        (let [bits (age-bits as-of f)] (when (seq bits) (str " · " (str/join " · " bits)))))
                      " · " (:channel f)

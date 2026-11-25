@@ -80,6 +80,12 @@
     (is (= full (vec (apply concat pages))))
     (is (every? #(<= (count %) 2) pages))))
 
+(deftest lines-name-who-wrote-it
+  (is (= ["Quarterly numbers — Sample Sender · recorded 1d ago · mail"]
+         (w/lines {:outcome :success :as-of now :coverage [{:channel "mail" :status :ok}]
+                   :findings [{:channel "mail" :title "Quarterly numbers" :by "Sample Sender"
+                               :times {:source "2026-11-25T08:00:00+09:00"} :refs []}]}))))
+
 (deftest walk-from-an-item-to-its-record-and-its-owner
   (let [cl (c)
         r  (w/ok! (w/ask cl "bench lamp"))
