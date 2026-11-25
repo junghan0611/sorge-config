@@ -43,13 +43,16 @@
   [:and [:vector {:min 1 :max 33} [:and [:string {:max 4096}] [:re "^[^\\u0000]*$"]]]
    [:fn #(and (vector? %) (reader-program? (first %)))]])
 
+(def ^:private json-keys-schema [:set {:max 128} [:string {:min 1 :max 120}]])
+
 (def opts-schema
   [:map {:closed true}
    [:argv argv-schema]
    [:attests [:set :wci/attest]]
    [:rows-path json-path]
    [:overview {:optional true} [:= :summary]]
-   [:allowed-json-keys {:optional true} [:set {:max 128} [:string {:min 1 :max 120}]]]
+   [:allowed-json-keys {:optional true} json-keys-schema]
+   [:drop-json-keys {:optional true} json-keys-schema]
    [:finding [:tuple [:= :assemble]
               [:map {:closed true}
                [:key expression] [:title expression] [:times expression] [:refs expression]
@@ -135,10 +138,21 @@
     (when-not (every? allowed (keys obj))
       (adapter/fail! :contract "local JSON reader returned a field outside the allowed metadata"))))
 
-(defn- mapped-answer [{:keys [argv rows-path finding data-through attests allowed-json-keys]} {:keys [live]}]
+(defn- remove-json-keys [drop-keys value]
+  (cond
+    (map? value) (into {} (keep (fn [[k v]]
+                                  (when-not (drop-keys k) [k (remove-json-keys drop-keys v)]))) value)
+    (vector? value) (mapv #(remove-json-keys drop-keys %) value)
+    :else value))
+
+(defn- metadata-doc [doc allowed drop-keys]
+  ;; Validate even discarded subtrees; a known parent does not attest unknown child keys.
+  (when (or allowed drop-keys) (check-json-keys! (into (or allowed #{}) drop-keys) doc))
+  (if (seq drop-keys) (remove-json-keys drop-keys doc) doc))
+
+(defn- mapped-answer [{:keys [argv rows-path finding data-through attests allowed-json-keys drop-json-keys]} {:keys [live]}]
   (when-not live (adapter/fail! :unsupported-time "fixed argv source cannot replay past knowledge"))
-  (let [doc (read-json! argv)
-        _ (when allowed-json-keys (check-json-keys! allowed-json-keys doc))
+  (let [doc (metadata-doc (read-json! argv) allowed-json-keys drop-json-keys)
         rows (lookup doc rows-path)
         bound (if data-through (project doc data-through) missing)]
     (when-not (vector? rows) (adapter/fail! :contract "mapped JSON rows must be an array"))

@@ -221,6 +221,32 @@
                (is (= [:contract] (mapv :kind (:failures out))))
                (is (not (str/includes? (core/->json out) "never display this")))))))))))
 
+(deftest dropped-values-never-reach-projection-or-errors
+  (let [secret "synthetic-private-payload"
+        with-content {:id "x" :label "Synthetic metadata" :nested {:body {:text secret}}}
+        make-channel (fn [argv] {:id "metadata" :kind :exec
+                                 :opts {:argv argv :rows-path [] :attests #{}
+                                        :allowed-json-keys #{"id" "label" "nested"}
+                                        :drop-json-keys #{"body" "text"}
+                                        :finding [:assemble {:key [:get ["id"]] :title [:get ["label"]] :times [:literal {}]
+                                                             :refs [:literal []] :by [:get ["nested" "body" "text"] :optional]}]}})
+        core-opts {:now (:as-of live) :token-secret "test-secret-0123456789"}]
+    (with-fake-cli (json/generate-string [with-content])
+      (fn [program argv]
+        (let [ch (make-channel argv)
+              cfg (config/validate-config {:channels [ch]})
+              projected (adapter/answer ch live)]
+          (is (= 1 (count (:findings projected))))
+          (is (not (contains? (first (:findings projected)) :by)))
+          (is (not (str/includes? (core/->json projected) secret)))
+          (is (= :contract (:wci/error-kind (failure-data #(adapter/answer
+                                                            (update ch :opts dissoc :allowed-json-keys) live)))))
+          (fake-output! program (json/generate-string [(assoc-in with-content [:nested :body :unknown] secret)]))
+          (let [r (core/run cfg {:op :overview} core-opts)]
+            (is (= [:contract] (mapv :kind (:failures r))))
+            (is (not (str/includes? (core/->json r) secret)))
+            (is (not (str/includes? (core/->json r) "unknown")))))))))
+
 (deftest malformed-or-incomplete-input-is-an-error-not-false-empty
   (let [source @catalog-text
         run #(failure-data (fn [] (adapter/answer % live)))]
