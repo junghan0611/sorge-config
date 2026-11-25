@@ -1,8 +1,10 @@
 (ns wci.token
   "불투명 참조 토큰. 서버 상태 없이 다시 풀린다.
 
-  body(EDN) → zlib 압축 → AES-256-GCM(무작위 12바이트 IV, AAD 고정) → base64url.
-  GCM 이 인증을 겸하므로 위조·변조·다른 키의 토큰은 전부 :unknown-ref 다.
+  형식 v2: [버전 2][압축 플래그][IV 12][AES-256-GCM 암호문 + 96비트 태그] → base64url.
+  평문은 [만료(epoch 초) body] EDN 이고, 압축이 더 작을 때만 zlib 으로 줄인다.
+  머리 두 바이트는 AAD 로 인증된다. 위조·변조·다른 키·이전 형식(v1)은 전부 :unknown-ref 다.
+  토큰은 아무 권한도 주지 않는다(따라갈 때 현재 설정으로 다시 판정) — 96비트 태그로 충분하다.
   만료는 암호문 안에 있고 :ref-expired 로 구분된다. 사라짐(:ref-gone)은 원천이
   판정한다 — 토큰이 아니라 어댑터 몫.
 
@@ -22,10 +24,11 @@
 (def default-key-env "WCI_TOKEN_KEY")
 (def default-ttl-hours 72)
 
-(def ^:private ^{:tag "[B"} aad (.getBytes "wci-ref/1" StandardCharsets/UTF_8))
-(def ^:private version-byte (unchecked-byte 1))
+(def ^:private aad-prefix "wci-ref/2:")
+(def ^:private version-byte (unchecked-byte 2))
 (def ^:private iv-len 12)
-(def ^:private tag-bits 128)
+(def ^:private tag-bits 96)
+(def ^:private tag-len (quot tag-bits 8))
 (def ^:private max-plain 65536)
 (def ^:private rng (SecureRandom.))
 
@@ -77,44 +80,50 @@
     (.end i)
     (.toByteArray out)))
 
-(defn- cipher ^Cipher [mode ^SecretKeySpec k ^bytes iv]
+(defn- cipher ^Cipher [mode ^SecretKeySpec k ^bytes iv flag]
   (doto (Cipher/getInstance "AES/GCM/NoPadding")
-    (.init (int mode) k (GCMParameterSpec. tag-bits iv))
-    (.updateAAD aad)))
+    (.init (int mode) k (GCMParameterSpec. (int tag-bits) iv))
+    (.updateAAD (.getBytes (str aad-prefix flag) StandardCharsets/UTF_8))))
 
 (defn seal
-  "body(EDN 값) 를 exp-ms 까지 유효한 토큰으로 감싼다."
+  "body(EDN 값) 를 exp-ms 까지 유효한 토큰으로 감싼다. 만료는 초 단위로 담긴다."
   ^String [^SecretKeySpec k body exp-ms]
-  (let [plain (deflate (.getBytes (pr-str {:e (long exp-ms) :b body})
-                                  StandardCharsets/UTF_8))
+  (let [raw   (.getBytes (pr-str [(quot (long exp-ms) 1000) body]) StandardCharsets/UTF_8)
+        z     (deflate raw)
+        [flag plain] (if (< (alength ^bytes z) (alength ^bytes raw)) [1 z] [0 raw])
         iv    (let [b (byte-array iv-len)] (.nextBytes ^SecureRandom rng b) b)
-        ct    (.doFinal (cipher Cipher/ENCRYPT_MODE k iv) plain)
-        out   (byte-array (+ 1 iv-len (alength ct)))]
+        ct    ^bytes (.doFinal (cipher Cipher/ENCRYPT_MODE k iv flag) ^bytes plain)
+        out   (byte-array (+ 2 iv-len (alength ct)))]
     (aset-byte out 0 version-byte)
-    (System/arraycopy iv 0 out 1 iv-len)
-    (System/arraycopy ct 0 out (inc iv-len) (alength ct))
+    (aset-byte out 1 (unchecked-byte flag))
+    (System/arraycopy iv 0 out 2 iv-len)
+    (System/arraycopy ct 0 out (+ 2 iv-len) (alength ct))
     (.encodeToString (.withoutPadding (Base64/getUrlEncoder)) out)))
 
 (defn- unknown! [why]
   (throw (ex-info (str "unknown reference: " why) {:wci/error-kind :unknown-ref})))
 
 (defn open
-  "토큰 → body. 위조·변조·형식 오류는 :unknown-ref, 만료는 :ref-expired."
+  "토큰 → body. 위조·변조·형식 오류·이전 형식은 :unknown-ref, 만료는 :ref-expired."
   [^SecretKeySpec k ^String token now-ms]
-  (let [raw (try (.decode (Base64/getUrlDecoder) token)
-                 (catch IllegalArgumentException _ (unknown! "not base64url")))]
-    (when (or (< (alength ^bytes raw) (+ 1 iv-len 16))
-              (not= version-byte (aget ^bytes raw 0)))
+  (let [raw ^bytes (try (.decode (Base64/getUrlDecoder) token)
+                        (catch IllegalArgumentException _ (unknown! "not base64url")))]
+    (when (< (alength raw) (+ 2 iv-len tag-len))
       (unknown! "bad framing"))
-    (let [iv    (Arrays/copyOfRange ^bytes raw 1 (int (inc iv-len)))
-          ct    (Arrays/copyOfRange ^bytes raw (int (inc iv-len)) (alength ^bytes raw))
-          plain (try (.doFinal (cipher Cipher/DECRYPT_MODE k iv) ct)
+    (when-not (= version-byte (aget raw 0))
+      (unknown! "this reference format is no longer issued; start again from overview or ask"))
+    (let [flag  (aget raw 1)
+          _     (when-not (#{0 1} (long flag)) (unknown! "bad framing"))
+          iv    (Arrays/copyOfRange raw 2 (int (+ 2 iv-len)))
+          ct    (Arrays/copyOfRange raw (int (+ 2 iv-len)) (alength raw))
+          plain (try (.doFinal (cipher Cipher/DECRYPT_MODE k iv (long flag)) ct)
                      (catch Exception _ (unknown! "authentication failed")))
-          {:keys [e b] :as m}
-          (try (edn/read-string (String. (inflate plain) StandardCharsets/UTF_8))
+          [e b :as v]
+          (try (edn/read-string (String. ^bytes (if (= 1 (long flag)) (inflate plain) plain)
+                                         StandardCharsets/UTF_8))
                (catch Exception _ (unknown! "undecodable payload")))]
-      (when-not (and (map? m) (int? e)) (unknown! "bad payload"))
-      (when (<= (long e) (long now-ms))
+      (when-not (and (vector? v) (= 2 (count v)) (int? e)) (unknown! "bad payload"))
+      (when (<= (* 1000 (long e)) (long now-ms))
         (throw (ex-info "reference has expired; start again from overview or ask"
                         {:wci/error-kind :ref-expired})))
       b)))

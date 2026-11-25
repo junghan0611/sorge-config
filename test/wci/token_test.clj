@@ -21,6 +21,18 @@
     (is (= :unknown-ref (kind-of #(token/open (token/derive-key "another-secret-0123456") tok 1))))
     (is (= :unknown-ref (kind-of #(token/open k "!!!not-a-token!!!" 1))))
     (is (= :unknown-ref (kind-of #(token/open k "AAAA" 1))))
+    (testing "a token of the earlier format is refused by name, not guessed"
+      (let [raw  (.decode (java.util.Base64/getUrlDecoder) tok)
+            _    (aset-byte raw 0 (unchecked-byte 1))
+            old  (.encodeToString (.withoutPadding (java.util.Base64/getUrlEncoder)) raw)
+            e    (try (token/open k old 1) nil (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :unknown-ref (:wci/error-kind (ex-data e))))
+        (is (re-find #"no longer issued" (ex-message e)))))
+    (testing "the compression flag is authenticated"
+      (let [raw (.decode (java.util.Base64/getUrlDecoder) tok)
+            _   (aset-byte raw 1 (unchecked-byte (- 1 (aget raw 1))))
+            bad (.encodeToString (.withoutPadding (java.util.Base64/getUrlEncoder)) raw)]
+        (is (= :unknown-ref (kind-of #(token/open k bad 1))))))
     (testing "expiry is checked only after authenticity"
       (is (= :ref-expired (kind-of #(token/open k tok 2000))))
       (is (= :unknown-ref (kind-of #(token/open k (flip tok 20) 5000)))))))

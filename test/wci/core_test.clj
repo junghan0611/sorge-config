@@ -1,6 +1,7 @@
 (ns wci.core-test
   "코어를 어댑터 없이 검증한다. :stub kind 는 설정 :opts 의 함수로 답을 지어낸다."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.walk]
             [wci.adapter :as adapter]
             [wci.core :as core]
             [wci.spec :as spec]
@@ -152,8 +153,11 @@
 
 (deftest byte-budget-and-too-small
   (let [fat (fn [k] (f k :refs (vec (for [i (range 3)] {:role :more :label (str "more " i) :key [k i]}))))
-        r   (run [(ch "a" (mapv fat ["p" "q" "r"]))] {:op :overview :budget {:max-bytes 2400}})]
-    (is (<= (count (.getBytes (core/->json r) "UTF-8")) 2400))
+        a   (ch "a" (mapv fat ["p" "q" "r"]))
+        size #(count (.getBytes (core/->json %) "UTF-8"))
+        cap (dec (size (run [a] {:op :overview :budget {:max-bytes 16384}})))
+        r   (run [a] {:op :overview :budget {:max-bytes cap}})]
+    (is (<= (size r) cap) "one byte short of everything: the answer still fits")
     (is (:truncated r))
     (is (pos? (count (:findings r))))
     (is (= [:budget-too-small]
@@ -227,6 +231,26 @@
             p (run [a broken] {:op :overview})]
         (is (= [:unreadable] (kinds p)))
         (is (= [] (get-in p [:partial :findings 0 :refs])))))))
+
+(defn- without-tokens
+  "토큰은 무작위 IV 라 매번 다르다. 길이는 같다. 비교를 위해 길이만 남긴다."
+  [x]
+  (clojure.walk/postwalk #(if (and (map? %) (string? (:ref %))) (update % :ref count) %) x))
+
+(deftest parallel-fan-out-answers-exactly-like-sequential
+  (let [slow (fn [id items] (ch id nil {:opts {:answer (fn [_] (Thread/sleep 150) {:findings items})}}))
+        chans [(slow "a" [(f "a1" :refs [{:role :more :label "m" :key "x"}])])
+               (slow "b" [(f "b1") (f "b2")])
+               (ch "c" nil {:opts {:answer (fn [_] (Thread/sleep 150) (adapter/fail! :unreadable "no"))}})
+               (slow "d" [])]
+        timed (fn [o] (let [t0 (System/nanoTime)
+                            r  (core/run {:channels chans} {:op :overview :budget {:max-items 2}} (merge opts o))]
+                        [r (/ (- (System/nanoTime) t0) 1e6)]))
+        [seq-r seq-ms] (timed {:fan-out :sequential})
+        [par-r par-ms] (timed {})]
+    (is (= (without-tokens seq-r) (without-tokens par-r)))
+    (is (= (count (core/->json seq-r)) (count (core/->json par-r))) "same bytes")
+    (is (< par-ms (- seq-ms 200)) (str "parallel " par-ms "ms vs sequential " seq-ms "ms"))))
 
 (deftest channels-lists-capabilities
   (let [r (run [(ch "a" []) (ch "b" [] {:opts {:describe {:as-of-support :live-only}}})] {:op :channels})]

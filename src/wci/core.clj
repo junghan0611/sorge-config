@@ -313,10 +313,39 @@
 
 ;; ───────────────────────── 토큰과 선 (wire) ─────────────────────────
 
+(defn- encode-body
+  "토큰 본문을 짧은 벡터로. 불투명하므로 모양은 코어만 안다 (v0.2.6 축소).
+   ref  [0 채널 키]           live — 따라갈 때 지금 다시 읽는다
+        [0 채널 키 as-of초]   과거 as-of — 그 시점으로 다시 세운다
+   rest [1 [0 원요청] 커서 예산?]   또는   [1 [1 채널 키 as-of초?] 커서 예산?]
+  정렬 체인은 싣지 않는다 — 원 요청에서 다시 유도된다."
+  [{:keys [t c k a l src after b]}]
+  (let [ref-v (fn [c k a l] (cond-> [c k] (not l) (conj (quot (long a) 1000))))]
+    (case t
+      :ref  (into [0] (ref-v c k a l))
+      :rest (let [s (if-let [q (:q src)]
+                      [0 q]
+                      (let [{:keys [c k a l]} (:x src)] (into [1] (ref-v c k a l))))]
+              (cond-> [1 s after] b (conj b))))))
+
+(defn- decode-body [v]
+  (let [ref-of (fn [[c k a-sec]] {:c c :k k :a (some-> a-sec (* 1000)) :l (nil? a-sec)})
+        shaped? (fn [x tag lo hi] (and (vector? x) (= tag (first x)) (<= lo (count x) hi)))]
+    (cond
+      (shaped? v 0 3 4) (assoc (ref-of (subvec v 1)) :t :ref)
+      (shaped? v 1 3 4) (let [[_ s after b] v]
+                          {:t     :rest
+                           :src   (cond (shaped? s 0 2 2) {:q (second s)}
+                                        (shaped? s 1 3 4) {:x (ref-of (subvec s 1))}
+                                        :else (request-error! :unknown-ref "unrecognised continuation"))
+                           :after after
+                           :b     b})
+      :else (request-error! :unknown-ref "unrecognised reference body"))))
+
 (defn- seal [ctx body]
-  (let [tok (token/seal (:key ctx) body (+ (:now ctx) (:ttl-ms ctx)))]
+  (let [tok (token/seal (:key ctx) (encode-body body) (+ (:now ctx) (:ttl-ms ctx)))]
     (when-not (spec/valid? :wci/ref-token tok)
-      (throw (ex-info (str "sealed reference is " (count tok) " chars; :wci/ref-token allows 16..1024")
+      (throw (ex-info (str "sealed reference of " (count tok) " chars violates :wci/ref-token")
                       {:wci/internal :ref-token-size})))
     tok))
 
@@ -363,8 +392,8 @@
                                  {:count (- total n)
                                   :ref   {:role :rest :terminal false
                                           :label (str (- total n) " more in this order")
-                                          :ref (seal ctx {:t :rest :src src :a as-of :l live
-                                                          :o order :after (:sv (peek shown))
+                                          :ref (seal ctx {:t :rest :src src
+                                                          :after (:sv (peek shown))
                                                           :b budget})}})]
                   (cond-> {:spec-version spec/version
                            :outcome      :success
@@ -498,22 +527,38 @@
    :finding (if (and (:area cfg) (not (:area f))) (assoc f :area (:area cfg)) f)
    :key-str (canon (:key f))})
 
+(defn- map-channels
+  "채널마다 f 를 부른다. 병렬이 기본이다 — 결과의 순서와 내용은 설정 순서와 정렬이 정하므로
+  순차와 같다. kind 구현은 먼저 이 스레드에서 싣는다 (동시 require 를 피한다)."
+  [ctx f cfgs]
+  (doseq [cfg cfgs] (try (ensure-kind! (:kind cfg)) (catch Exception _ nil)))
+  (if (:parallel ctx)
+    (mapv deref (mapv #(future (f %)) cfgs))
+    (mapv f cfgs)))
+
 (defn- fan-out
-  "선택된 채널을 차례로 부른다. → {:failures [...] :coverage [...] :items [...]}"
+  "선택된 채널을 (병렬로) 부르고 설정 순서대로 모은다. → {:failures [...] :coverage [...] :items [...]}"
   [ctx config {:keys [selected live] :as plan}]
-  (let [creq (channel-request plan)]
+  (let [creq    (channel-request plan)
+        chosen  (filterv #(contains? selected (:id %)) (:channels config))
+        results (zipmap (map :id chosen)
+                        (map-channels
+                         ctx
+                         (fn [cfg]
+                           (call-channel
+                            cfg #(:now ctx)
+                            (fn [desc]
+                              (when (and (not live) (= :live-only (:as-of-support desc)))
+                                (adapter/fail! :unsupported-time
+                                               "channel reads only the present; it cannot rebuild a past as-of"))
+                              {:answer (check-answer! desc creq (:as-of plan) (adapter/answer cfg creq))})))
+                         chosen))]
     (reduce
      (fn [acc cfg]
        (let [id (:id cfg)]
          (if-not (contains? selected id)
            (update acc :coverage conj {:channel id :status :excluded})
-           (let [res (call-channel
-                      cfg #(:now ctx)
-                      (fn [desc]
-                        (when (and (not live) (= :live-only (:as-of-support desc)))
-                          (adapter/fail! :unsupported-time
-                                         "channel reads only the present; it cannot rebuild a past as-of"))
-                        {:answer (check-answer! desc creq (:as-of plan) (adapter/answer cfg creq))}))]
+           (let [res (get results id)]
              (if-let [f (:failure res)]
                (-> acc (update :failures conj f) (update :failed conj id))
                (let [[cov kept] (coverage-for id res plan)]
@@ -614,19 +659,21 @@
                                :src {:x x} :budget budget}))))
 
 (defn- follow-rest
-  "이어받기. 원래 요청을 다시 돌리고 커서 뒤부터 싣는다. 원래가 live 면 지금 다시 읽는다."
-  [ctx config {:keys [src o after b]} budget]
+  "이어받기. 원래 요청을 다시 돌리고 커서 뒤부터 싣는다. 원래가 live 면 지금 다시 읽는다.
+  정렬 체인은 원 요청에서 다시 유도한다 (토큰에 싣지 않는다)."
+  [ctx config {:keys [src after b]} budget]
   (let [budget (or budget b)]
     (cond
       (:q src) (answer-query ctx config (merge (query-plan ctx config (:q src))
-                                               {:order o :after after :budget budget :src src}))
-      (:x src) (answer-expand ctx config (:x src) o after budget)
+                                               {:after after :budget budget :src src}))
+      (:x src) (answer-expand ctx config (:x src) (order-for :follow nil) after budget)
       :else    (request-error! :unknown-ref "unrecognised continuation"))))
 
 (defn- follow [ctx config {:keys [ref budget]}]
-  (let [body (try (token/open (:key ctx) ref (:now ctx))
-                  (catch ExceptionInfo e
-                    (request-error! (:wci/error-kind (ex-data e)) (ex-message e))))]
+  (let [body (decode-body
+              (try (token/open (:key ctx) ref (:now ctx))
+                   (catch ExceptionInfo e
+                     (request-error! (:wci/error-kind (ex-data e)) (ex-message e)))))]
     (case (:t body)
       :ref  (answer-expand ctx config (select-keys body [:c :k :a :l]) (order-for :follow nil) nil budget)
       :rest (follow-rest ctx config body budget)
@@ -635,7 +682,8 @@
 ;; ───────────────────────── channels ─────────────────────────
 
 (defn- list-channels [ctx config]
-  (let [res (mapv (fn [cfg] [cfg (call-channel cfg #(:now ctx) (constantly {}))]) (:channels config))
+  (let [res (mapv vector (:channels config)
+                  (map-channels ctx #(call-channel % (fn [] (:now ctx)) (constantly {})) (:channels config)))
         failures (keep (comp :failure second) res)
         observed (t/format-kst (:now ctx))]
     (if (seq failures)
@@ -739,13 +787,15 @@
 
 (defn context
   "config + opts → 실행 문맥. 키가 없으면 여기서 터진다 (기동 에러).
-  opts: {:now KST|ms, :token-secret str} — 둘 다 테스트·재현용. 운영은 env."
+  opts: {:now KST|ms, :token-secret str, :fan-out :parallel|:sequential}
+  — :now·:token-secret 은 테스트·재현용(운영은 env), :fan-out 기본 :parallel."
   [config opts]
   (let [key-env (get-in config [:token :key-env] token/default-key-env)
         ttl-h   (get-in config [:token :ttl-hours] token/default-ttl-hours)]
     {:now    (now-of opts)
      :key    (if-let [s (:token-secret opts)] (token/derive-key s) (token/key-from-env key-env))
-     :ttl-ms (* (long ttl-h) 3600 1000)}))
+     :ttl-ms (* (long ttl-h) 3600 1000)
+     :parallel (not= :sequential (:fan-out opts))}))
 
 (defn run
   "config(검증된 :channel/config) + request(:wci/request) → :wci/response.
