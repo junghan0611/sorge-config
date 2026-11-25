@@ -1,5 +1,5 @@
 ;; =============================================================================
-;; spec/wci.edn — work-context interface (v0.2.2-draft)
+;; spec/wci.edn — work-context interface (v0.2.3-draft)
 ;; =============================================================================
 ;;
 ;; 이 EDN 하나가 SSOT다. md로 따로 쓰지 않는다. 설명은 주석에 둔다.
@@ -47,7 +47,14 @@
 ;;
 ;; 코어 해석 (구현이 정한 것, 036feb5 — 바꾸려면 이슈 스레드에서):
 ;;   - overview: 움직임 = last-movement, 없으면 source. :expected 는 as-of±horizon
-;;     대칭(지난 마감도 잡힌다). :awaits 가 있으면 항상 포함.
+;;     대칭(지난 마감도 잡힌다). :awaits·:state·:gist 가 있으면 horizon 과 무관하게
+;;     포함한다(v0.2.3) — 원천의 단언은 다음 단언으로 바뀌기 전까지 "현재"다.
+;;     나이는 시각이 말한다. 어댑터는 overview 에서 디테일 대신 영역 단위 한 줄을
+;;     내고(예: 리포당 하나), 디테일은 :history ref 아래로 내린다.
+;;   - :area 는 원천 또는 로컬 설정이 증언한다. 설정의 채널 :area 는 area 없는
+;;     finding 에 코어가 찍는다(이름 매칭이 아니라 설정의 증언, v0.2.3).
+;;   - 따라가는 ref 는 :channel 로 같은 설정의 다른 채널을 가리킬 수 있다(v0.2.3).
+;;     채널을 건너는 고리는 원천이나 설정이 증언할 때만 만든다.
 ;;   - 부재 술어 = [:last-movement :before n]. :data-through 가 없으면 :stale.
 ;;     날짜 data-through 는 그날 끝까지 덮는다.
 ;;   - {:before p} 는 :before 술어만 만족시킨다(p ≤ 컷). 정렬 키는 p.
@@ -68,7 +75,7 @@
 ;; CLI exit: 0 success · 1 error 봉투 · 2 호출 위반 · 3 설정/IO · 4 코어 불변식 위반(버그, stderr)
 ;; =============================================================================
 
-{:spec-version "0.2.2-draft"
+{:spec-version "0.2.3-draft"
 
  :constants
  {:overview-horizon-days 14       ;; overview: as-of 앞뒤 이 범위의 움직임·예정
@@ -138,7 +145,8 @@
    [:garden-id     [:map {:closed true} [:kind [:= :garden-id]]
                     [:id [:re "^\\d{8}T\\d{6}-[0-9a-f]{6}$"]]]]
    [:repo-owner    [:map {:closed true} [:kind [:= :repo-owner]]
-                    [:repo [:string {:min 1}]]
+                    [:cwd [:re "^/"]]                  ;; 새 형제를 열 로컬 절대경로 (v0.2.3)
+                    [:repo {:optional true} [:string {:min 1}]]   ;; 사람이 읽는 slug
                     [:doc-id {:optional true} [:re "^\\d{8}T\\d{6}$"]]]]
    [:issue-tracker [:map {:closed true} [:kind [:= :issue-tracker]]
                     [:url [:re "^https://"]]]]]
@@ -154,11 +162,16 @@
 
   :wci/ref
   [:multi {:dispatch :role}
-   [:more     [:map {:closed true} [:role [:= :more]]     [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
-   [:history  [:map {:closed true} [:role [:= :history]]  [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
-   [:evidence [:map {:closed true} [:role [:= :evidence]] [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
-   [:owner    [:map {:closed true} [:role [:= :owner]]    [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
-   [:rest     [:map {:closed true} [:role [:= :rest]]     [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
+   [:more     [:map {:closed true} [:role [:= :more]]     [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]
+               [:channel {:optional true} :wci/channel-id]]]
+   [:history  [:map {:closed true} [:role [:= :history]]  [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]
+               [:channel {:optional true} :wci/channel-id]]]
+   [:evidence [:map {:closed true} [:role [:= :evidence]] [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]
+               [:channel {:optional true} :wci/channel-id]]]
+   [:owner    [:map {:closed true} [:role [:= :owner]]    [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]
+               [:channel {:optional true} :wci/channel-id]]]
+   [:rest     [:map {:closed true} [:role [:= :rest]]     [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]
+               [:channel {:optional true} :wci/channel-id]]]
    [:same-as  [:map {:closed true} [:role [:= :same-as]]  [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]
                [:channel :wci/channel-id]]]
    [:record   [:map {:closed true} [:role [:= :record]]   [:terminal [:= true]] [:label :string]
@@ -349,10 +362,14 @@
 
   :channel/ref-seed
   [:multi {:dispatch :role}
-   [:more     [:map {:closed true} [:role [:= :more]]     [:label :string] [:key :any]]]
-   [:history  [:map {:closed true} [:role [:= :history]]  [:label :string] [:key :any]]]
-   [:evidence [:map {:closed true} [:role [:= :evidence]] [:label :string] [:key :any]]]
-   [:owner    [:map {:closed true} [:role [:= :owner]]    [:label :string] [:key :any]]]
+   [:more     [:map {:closed true} [:role [:= :more]]     [:label :string] [:key :any]
+               [:channel {:optional true} :wci/channel-id]]]   ;; 다른 채널로 건너감
+   [:history  [:map {:closed true} [:role [:= :history]]  [:label :string] [:key :any]
+               [:channel {:optional true} :wci/channel-id]]]   ;; 다른 채널로 건너감
+   [:evidence [:map {:closed true} [:role [:= :evidence]] [:label :string] [:key :any]
+               [:channel {:optional true} :wci/channel-id]]]   ;; 다른 채널로 건너감
+   [:owner    [:map {:closed true} [:role [:= :owner]]    [:label :string] [:key :any]
+               [:channel {:optional true} :wci/channel-id]]]   ;; 다른 채널로 건너감
    [:same-as  [:map {:closed true} [:role [:= :same-as]]  [:label :string]
                [:channel :wci/channel-id] [:key :any]]]
    [:record   [:map {:closed true} [:role [:= :record]]   [:label :string]
@@ -391,6 +408,7 @@
       [:id :wci/channel-id]
       [:kind :keyword]
       [:title {:optional true} :string]
+      [:area {:optional true} :wci/area]               ;; 이 채널의 소속 증언 (v0.2.3)
       [:opts {:optional true} :map]]]]
    [:token {:optional true}
     [:map {:closed true}
