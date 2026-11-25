@@ -1,0 +1,72 @@
+;; Entirely synthetic. At 2026-11-26T09:00:00+09:00, strict Q2 matches lamp, dial, and hinge.
+{:describe {:kind "fixture" :title "Synthetic tracker"
+            :as-of-support :replay :question :keyword
+            :attests #{:source :last-movement :expected :awaits :area :state :gist}
+            :contact-liveness :hide :source-tz "+09:00"}
+ :data-through "2026-12-15T00:00:00+09:00"
+ :rows
+ [{:recorded-at "2026-11-12T13:00:00+09:00" :entry? true
+   :finding {:key "lamp" :title "Bench lamp trial"
+             :times {:source "2026-11-12T13:00:00+09:00"
+                     :last-movement "2026-11-12T13:00:00+09:00"}
+             :gist {:text "The trial is waiting for its first measurements." :asserted-by "Synthetic tracker"}
+             :refs []}}
+  {:recorded-at "2026-11-19T08:59:59+09:00" :entry? true
+   :finding {:key "lamp" :title "Bench lamp trial"
+             :times {:source "2026-11-12T13:00:00+09:00"
+                     :last-movement "2026-11-19T08:59:59+09:00"
+                     :expected {:at "2026-12-03" :asserted-by "Synthetic tracker"}}
+             :gist {:text "The measurements are in; choose whether to repeat the trial." :asserted-by "Synthetic tracker"}
+             :awaits {:who :human :asserted-by "Synthetic tracker" :since "2026-11-19"}
+             :state {:text "Review requested" :asserted-by "Synthetic tracker"}
+             :area {:key "bench" :label "Bench trials"}
+             :refs [{:role :history :label "Review the measurement timeline" :key "lamp/history"}]}}
+  {:recorded-at "2026-11-19T08:59:59+09:00" :entry? false
+   :finding {:key "lamp/history" :title "Lamp measurements recorded"
+             :times {:source "2026-11-19T08:59:59+09:00"}
+             :refs [{:role :evidence :label "Inspect the comparison reading" :key "lamp/evidence"}]}}
+  {:recorded-at "2026-11-19T08:59:59+09:00" :entry? false
+   :finding {:key "lamp/evidence" :title "Comparison reading is ready for review"
+             :times {:source "2026-11-19T08:59:59+09:00"}
+             :refs [{:role :record :label "Open the comparison reading"
+                     :surface {:kind "Synthetic tracker record" :accepts "fixture record URL"}
+                     :locator "https://tracker.invalid/reading/lamp-1"}
+                    {:role :contact :label "Ask the bench trial owner"
+                     :contact {:address {:kind :garden-id :id "20000101T000000-abcdef"}
+                               :last-active :hidden
+                               :scope "Bench lamp trial and comparison reading"
+                               :draft "What would the repeat trial distinguish?"}}]}}
+  {:recorded-at "2026-11-18T11:00:00+09:00" :entry? true
+   :finding {:key "dial" :title "Dial calibration follow-up"
+             :times {:source "2026-11-17T14:00:00+09:00"
+                     :last-movement "2026-11-18T11:00:00+09:00"
+                     :expected {:at "2026-12-05" :asserted-by "Synthetic tracker"}}
+             :awaits {:who :owner :asserted-by "Synthetic tracker"}
+             :area {:key "bench" :label "Bench trials"}
+             :refs []}}
+  {:recorded-at "2026-11-18T11:30:00+09:00" :entry? true
+   :finding {:key "hinge" :title "Hinge fit follow-up"
+             :times {:source "2026-11-18T11:30:00+09:00"
+                     :last-movement "2026-11-18T11:30:00+09:00"
+                     :expected {:at "2026-12-09" :asserted-by "Synthetic tracker"}}
+             :awaits {:who :external :asserted-by "Synthetic tracker"}
+             :area {:key "fit" :label "Fit trials"}
+             :refs []}}
+  {:recorded-at "2026-11-18T15:00:00+09:00" :entry? true
+   :finding {:key "upper" :title "Bracket review at the due-window boundary"
+             :times {:source "2026-11-18T15:00:00+09:00"
+                     :last-movement "2026-11-18T15:00:00+09:00"
+                     :expected {:at "2026-12-10" :asserted-by "Synthetic tracker"}}
+             :refs []}}
+  {:recorded-at "2026-11-19T09:00:00+09:00" :entry? true
+   :finding {:key "cutoff" :title "Clip review at the movement cutoff"
+             :times {:source "2026-11-17T16:00:00+09:00"
+                     :last-movement "2026-11-19T09:00:00+09:00"
+                     :expected {:at "2026-12-04" :asserted-by "Synthetic tracker"}}
+             :refs []}}
+  {:recorded-at "2026-11-19T09:00:01+09:00" :entry? true
+   :finding {:key "recent" :title "Gauge review just inside the movement window"
+             :times {:source "2026-11-17T16:30:00+09:00"
+                     :last-movement "2026-11-19T09:00:01+09:00"
+                     :expected {:at "2026-12-04" :asserted-by "Synthetic tracker"}}
+             :refs []}}]}

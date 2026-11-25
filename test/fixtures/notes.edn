@@ -1,0 +1,11 @@
+;; Published times only: no assertions about state, activity, ownership, or due dates.
+{:describe {:kind "fixture" :title "Synthetic notes"
+            :as-of-support :live-only :question :none
+            :attests #{:source} :contact-liveness :none :source-tz "+09:00"}
+ :data-through "2026-12-15T00:00:00+09:00"
+ :rows [{:recorded-at "2026-11-23T13:00:00+09:00" :entry? true
+         :finding {:key "note-a" :title "A new reading on the trial bench"
+                   :times {:source "2026-11-23T13:00:00+09:00"}
+                   :refs [{:role :record :label "Open the bench note"
+                           :surface {:kind "Synthetic note" :accepts "fixture note URL"}
+                           :locator "https://notes.invalid/bench/readings"}]}}]}
