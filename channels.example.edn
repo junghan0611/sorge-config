@@ -12,6 +12,9 @@
 ;;>                                                            :label [:literal "Open the issue"]
 ;;>                                                            :surface [:literal {:kind "Issue tracker"}]
 ;;>                                                            :locator [:get ["url"]]}]]]}]}}
+;; 같은 리포의 NEXT → Git follow는 NEXT opts의 :git-channel이 Git 채널 id를 가리킨다.
+;; {:id "sample-git" :kind :git :area {:key "sample" :label "Sample area"} :opts {:root "./synthetic-repo"}}
+;; {:id "sample-next" :kind :next-card :opts {:root "./synthetic-repo" :git-channel "sample-git"}}
 {:channels
  [{:id "tracker" :kind :fixture :title "Synthetic tracker"
    :opts {:path "test/fixtures/tracker.edn"}}

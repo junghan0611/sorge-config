@@ -6,7 +6,8 @@
             [malli.core :as m]
             [wci.adapter :as adapter]
             [wci.adapter.edn-io :as edn-io]
-            [wci.config :as config])
+            [wci.config :as config]
+            [wci.core :as core])
   (:import [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))
 
@@ -76,8 +77,9 @@
    (fn [root]
      (let [{:keys [old new]} (repo! root)
            cfg (cfg :git root {:rev "refs/heads/main" :issue-base "https://tracker.invalid/fixture/issues"})
-           historical (adapter/answer cfg past)
-           live-answer (adapter/answer cfg live)
+           query {:mode :where :where [[:source :after -14]]}
+           historical (adapter/answer cfg (merge past query))
+           live-answer (adapter/answer cfg (merge live query))
            [item] (:findings historical)]
        (is (m/validate :channel/describe (adapter/describe cfg) @schemas))
        (is (m/validate :channel/answer historical @schemas))
@@ -92,7 +94,26 @@
        (is (= :ref-gone (fails-with #(adapter/expand cfg new (assoc past :mode :follow)))))
        (is (= old (get-in (adapter/expand cfg old (assoc past :mode :follow)) [:findings 0 :key])))
        (let [no-issue-base (update cfg :opts dissoc :issue-base)]
-         (is (= 1 (count (get-in (adapter/answer no-issue-base past) [:findings 0 :refs])))))))))
+         (is (= 1 (count (get-in (adapter/answer no-issue-base (merge past query)) [:findings 0 :refs])))))))))
+
+(deftest git-overview-summarizes-one-area-and-keeps-records-for-follow
+  (temp-directory
+   (fn [root]
+     (repo! root)
+     (let [cfg (assoc (cfg :git root {}) :area {:key "bench" :label "Bench trials"})
+           response (adapter/answer cfg (assoc live :horizon-days 2))
+           [row] (:findings response)
+           [history] (:refs row)
+           followed (adapter/expand cfg (:key history) (assoc live :mode :follow))]
+       (is (m/validate :channel/answer response @schemas))
+       (is (= 1 (count (:findings response))))
+       (is (= ["Bench trials" "2026-11-25T08:00:00+09:00" "2 commits in the last 2 days"]
+              [(:title row) (get-in row [:times :last-movement]) (get-in row [:gist :text])]))
+       (is (= :history (:role history)))
+       (is (= ["Add fixture marker" "Record test specimen" "Prepare test specimen"]
+              (mapv :title (:findings followed))))
+       (is (string? (get-in (adapter/answer cfg (assoc live :mode :where :where [[:last-movement :before -7]]))
+                            [:uninterpreted :reason])))))))
 
 (deftest next-adapter-replays-card-links-and-ownership-at-the-same-cut
   (temp-directory
@@ -101,7 +122,8 @@
            cfg (cfg :next-card root {:repo "fixture/sample"})
            historical (adapter/answer cfg past)
            [item] (:findings historical)
-           [record read contact] (:refs item)
+           [record more contact] (:refs item)
+           read (get-in (adapter/expand cfg (:key more) (assoc past :mode :follow)) [:findings 0 :refs 0])
            committed (first (:findings (adapter/answer cfg live)))]
        (is (m/validate :channel/describe (adapter/describe cfg) @schemas))
        (is (m/validate :channel/answer historical @schemas))
@@ -111,6 +133,7 @@
        (is (= "CURRENT" (get-in item [:state :text])))
        (is (= "2026-11-16T22:00:00+09:00" (get-in item [:times :source])))
        (is (str/ends-with? (:locator record) (str "@" old ":NEXT.md")))
+       (is (= [:more "읽을 곳 1"] ((juxt :role :label) more)))
        (is (str/ends-with? (:locator read) (str "@" old ":docs/old-guide.md")))
        (is (= {:kind :repo-owner :cwd (.getCanonicalPath root)
                :repo "fixture/sample" :doc-id "20000101T000000"}
@@ -130,8 +153,65 @@
            (is (= {} (:times work)))
            (is (= "20000101T020000" (get-in work [:refs 2 :contact :address :doc-id])))
            (is (= historical (adapter/answer cfg past)))))
-       (spit (io/file root "NEXT.md") "# An unrecognized card\n")
-       (is (= :contract (fails-with #(adapter/answer cfg live))))))))
+       (spit (io/file root "NEXT.md") "# A bare handoff card\n")
+       (is (= {:title "A bare handoff card" :times {}}
+              (select-keys (get-in (adapter/answer cfg live) [:findings 0]) [:title :times :gist :state :awaits])))))))
+
+(deftest handoff-skill-variants-do-not-require-current
+  (temp-directory
+   (fn [root]
+     (repo! root)
+     (let [cfg (cfg :next-card root {})
+           file (io/file root "NEXT.md")
+           rail "# RAIL — current\n- [ ] **Current checkpoint** ← CURRENT: inspect the specimen\n"
+           body {"stem" (str rail "# NOW — Trial stem\n- Stem: Complete trials\n- Next: Review reading\n- Detour: None\n- Return: Repeat after review\n- Blocker: None\n")
+                 "meta" (str rail "# NOW\n- Hot group: Trials\n- Next: Review reading\n# ACTIVE\n## Trials\n- Current: An area-specific statement not the current overview\n# DORMANT\n")
+                 "duplicated outline" (str rail "# RAIL — details\n- [x] Preliminary work\n# NOW\n- Next: Review reading\n# RECENT\n## NOW — Old card\n- Current: Old content\n")}]
+       (doseq [[label text] body]
+         (testing label
+           (spit file text)
+           (let [result (adapter/answer cfg live) row (get-in result [:findings 0])]
+             (is (m/validate :channel/answer result @schemas))
+             (is (= "CURRENT" (get-in row [:state :text])))
+             (is (not (contains? row :gist)))
+             (is (not (contains? row :awaits))))))
+       (testing "duplicates with identical claims are fine; conflict is not"
+         (spit file (str rail "# NOW\n- **Current:** One reading\n- Current: One reading\n"))
+         (is (= "One reading" (get-in (adapter/answer cfg live) [:findings 0 :gist :text])))
+         (spit file (str rail "# NOW\n- Current: First reading\n- Current: Different reading\n"))
+         (is (= :contract (fails-with #(adapter/answer cfg live)))))
+       (testing "clipping is explicit, bounded and safe at a surrogate boundary"
+         (spit file (str rail "# NOW\n- Current: " (apply str (repeat 187 "x")) "🧪" (apply str (repeat 60 "x")) "\n"))
+         (let [text (get-in (adapter/answer cfg live) [:findings 0 :gist :text])]
+           (is (<= (count text) 200))
+           (is (str/ends-with? text " … [clipped]"))
+           (is (not-any? #(Character/isSurrogate %) text))))))))
+
+(deftest folded-reading-links-and-cross-channel-history-have-separate-follows
+  (temp-directory
+   (fn [root]
+     (repo! root)
+     (let [git (assoc (cfg :git root {}) :id "fixture-git")
+           next (assoc (cfg :next-card root {:git-channel "fixture-git"}) :id "fixture-next")
+           cfg (config/validate-config {:channels [git next]})
+           opts {:now (:as-of live) :token-secret "test-secret-0123456789"}
+           ask #(core/run cfg % opts)
+           overview #(ask {:op :overview :scope {:include ["fixture-next"]}})
+           find-ref (fn [result role] (first (filter #(= role (:role %)) (get-in result [:findings 0 :refs]))))
+           history (find-ref (overview) :history)]
+       (is (= "fixture-git" (:channel history)))
+       (is (= ["Add fixture marker"] (mapv :title (:findings (ask {:op :follow :ref (:ref history)})))))
+       (let [file (io/file root "NEXT.md")
+             targets (map #(str "`docs/item-" % ".md`") (range 6))]
+         (spit file (str "# RAIL\n- [ ] Check specimen ← CURRENT\n# NOW\n- Current: View the six readings.\n- Read: "
+                         (str/join ", " targets) "\n"))
+         (let [r (overview) more (find-ref r :more)
+               detail (ask {:op :follow :ref (:ref more) :budget {:max-items 2}})]
+           (is (= "읽을 곳 6" (:label more)))
+           (is (= 1 (count (filter #(= :record (:role %)) (get-in r [:findings 0 :refs])))))
+           (is (nil? (find-ref r :history)) "an uncommitted card has no attested edit time")
+           (is (= [true 4] [(:truncated detail) (get-in detail [:rest :count])]))
+           (is (every? #(= [:record] (mapv :role (:refs %))) (:findings detail)))))))))
 
 (deftest next-as-of-does-not-read-unmerged-branch-state
   (temp-directory

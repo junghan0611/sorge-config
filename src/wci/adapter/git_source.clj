@@ -66,6 +66,11 @@
 (defn before? [when cutoff]
   (.isBefore (OffsetDateTime/parse when) (OffsetDateTime/parse cutoff)))
 
+(defn shift-days [at days]
+  (-> (OffsetDateTime/parse at) (.plusDays days) (.format DateTimeFormatter/ISO_OFFSET_DATE_TIME)))
+
+(defn history-since-key [at] [:git/history-since at])
+
 (defn- nul-records [out width]
   (if (empty? out)
     []
@@ -85,12 +90,18 @@
           {:oid (oid! oid) :at (as-kst committed-at) :title title :message message})
         (nul-records (log-output ctx "%H%x00%cI%x00%s%x00%B" []) 4)))
 
+(defn recordings
+  "Object id and committer time only; omit messages for aggregation."
+  ([ctx] (recordings ctx []))
+  ([ctx args]
+   (mapv (fn [[oid at]] {:oid (oid! oid) :at (as-kst at)})
+         (nul-records (log-output ctx "%H%x00%cI" args) 2))))
+
 (defn first-parent-at
   "Find the committed tree before the exclusive cut. Timestamp inversions are ambiguous."
   [ctx cutoff]
   (require-complete! ctx)
-  (let [chain (mapv (fn [[oid at]] {:oid (oid! oid) :at (as-kst at)})
-                    (nul-records (log-output ctx "%H%x00%cI" ["--first-parent"]) 2))]
+  (let [chain (recordings ctx ["--first-parent"])]
     (when (some (fn [[child parent]] (before? (:at child) (:at parent))) (partition 2 1 chain))
       (adapter/fail! :unsupported-time "first-parent recording times do not establish an ordered cut"))
     (or (some #(when (before? (:at %) cutoff) %) chain)

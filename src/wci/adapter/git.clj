@@ -28,10 +28,27 @@
                  :locator (str root "@" oid)}]
                (issue-refs issue-base message))})
 
-(defn- visible [{:keys [opts]} {:keys [live as-of]}]
+(defn- visible [read-records {:keys [opts]} {:keys [live as-of]}]
   (let [ctx (git/context opts)]
     (when-not live (git/require-complete! ctx))
-    (filterv #(git/before? (:at %) as-of) (git/commits ctx))))
+    (filterv #(git/before? (:at %) as-of) (read-records ctx))))
+
+(def ^:private repo-history-key [:git/history])
+
+(defn- overview [{:keys [area title] :as cfg} {:keys [as-of horizon-days] :as req}]
+  (let [rows (visible git/recordings cfg req)
+        latest (reduce (fn [best row] (if (or (nil? best) (git/before? best (:at row))) (:at row) best)) nil rows)
+        lower (git/shift-days as-of (- horizon-days))
+        recent-count (count (remove #(git/before? (:at %) lower) rows))]
+    {:matched-by origin
+     :findings (if latest
+                 [{:key [:git/overview]
+                   :title (or (:label area) title "Git history")
+                   :times {:last-movement latest}
+                   :gist {:text (str recent-count " commits in the last " horizon-days " days")
+                          :asserted-by "Reachable Git history"}
+                   :refs [{:role :history :label "Open commit history" :key repo-history-key}]}]
+                 [])}))
 
 (defn- matches? [^String title ^String question]
   (str/includes? (.toLowerCase title Locale/ROOT) (.toLowerCase question Locale/ROOT)))
@@ -39,16 +56,27 @@
 (defmethod adapter/describe :git [{:keys [opts title]}]
   (git/context opts)
   {:kind "git" :title (or title "Git history")
-   :as-of-support :replay :question :keyword :attests #{:source} :contact-liveness :none})
+   :as-of-support :replay :question :keyword
+   :attests #{:source :last-movement :gist} :contact-liveness :none})
 
-(defmethod adapter/answer :git [{:keys [opts] :as cfg} {:keys [mode question] :as req}]
-  (let [rows (visible cfg req)
-        search? (= :question mode)]
-    {:matched-by (str (when search? "title keyword; ") origin)
-     :findings (into [] (comp (filter #(or (not search?) (matches? (:title %) question)))
-                             (map #(finding opts %))) rows)}))
+(defmethod adapter/answer :git [{:keys [opts] :as cfg} {:keys [mode question where] :as req}]
+  (if (= :overview mode)
+    (overview cfg req)
+    (let [rows (visible git/commits cfg req)
+          search? (= :question mode)]
+      (if (and (= :where mode) (some #(not= :source (first %)) where))
+        {:findings [] :uninterpreted {:reason "commit records attest only their recording time"}}
+        {:matched-by (str (when search? "title keyword; ") origin)
+         :findings (into [] (comp (filter #(or (not search?) (matches? (:title %) question)))
+                                 (map #(finding opts %))) rows)}))))
 
 (defmethod adapter/expand :git [{:keys [opts] :as cfg} key req]
-  (if-let [commit (some #(when (= key (:oid %)) %) (visible cfg req))]
-    {:matched-by origin :findings [(finding opts commit)]}
-    (adapter/fail! :ref-gone "commit is not in the configured history at the knowledge cut")))
+  (let [rows (visible git/commits cfg req)]
+    (cond
+      (= key repo-history-key) {:matched-by origin :findings (mapv #(finding opts %) rows)}
+      (and (vector? key) (= 2 (count key)) (= :git/history-since (first key)) (string? (second key)))
+      {:matched-by (str origin "; newer than handoff")
+       :findings (into [] (comp (filter #(git/before? (second key) (:at %))) (map #(finding opts %))) rows)}
+      :else (if-let [commit (some #(when (= key (:oid %)) %) rows)]
+              {:matched-by origin :findings [(finding opts commit)]}
+              (adapter/fail! :ref-gone "commit is not in the configured history at the knowledge cut")))))
