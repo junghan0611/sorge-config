@@ -1,0 +1,23 @@
+{
+  "through": "2026-11-26T00:00:00Z",
+  "items": [
+    {
+      "id": "fixture-clip",
+      "labels": ["Clip clearance sample"],
+      "recordedAt": "2026-11-25T18:30:00-05:00",
+      "expectedOn": "2026-12-03",
+      "phase": "WAITING",
+      "ownerQueue": "CHECK",
+      "record": "https://catalog.invalid/samples/clip",
+      "body": "Fixture-only text that is not an allowed finding field."
+    },
+    {
+      "id": "fixture-wheel",
+      "labels": ["Wheel alignment sample"],
+      "recordedAt": "2026-11-25T13:00:00Z",
+      "expectedOn": "2026-12-04",
+      "phase": "READY",
+      "record": "https://catalog.invalid/samples/wheel"
+    }
+  ]
+}

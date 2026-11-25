@@ -1,6 +1,8 @@
 ;; channels.example.edn — 커밋되는 예시. 실제 설정은 channels.local.edn (gitignore).
 ;; 형식: spec/wci.edn 의 :channel/config. :opts 는 kind 별로 어댑터가 엄격 검증한다.
 ;; 여기에는 합성 fixture 만 둔다. 실제 경로·계정·명령은 로컬 파일에만.
+;; 고정 argv와 JSON 필드 매핑의 합성 예시: test/fixtures/exec_channel.edn.
+;; :exec에는 운영자가 신뢰하는 읽기 전용 프로그램만 지정한다. 임의 코드를 격리하는 기능은 아니다.
 {:channels
  [{:id "tracker" :kind :fixture :title "Synthetic tracker"
    :opts {:path "test/fixtures/tracker.edn"}}

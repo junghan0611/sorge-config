@@ -1,0 +1,24 @@
+;; An example of the five fixed mapping operations with a trusted local reader.
+;; :get is required unless marked :optional; explicit JSON null is not a missing key.
+;; :kst accepts an offset timestamp or a calendar day. :assemble selects fields/refs.
+{:channels
+ [{:id "catalog" :kind :exec :title "Synthetic catalog"
+   :opts {:argv ["cat" "--" "test/fixtures/exec_catalog.json"]
+          :attests #{:source :expected :awaits :state}
+          :rows-path ["items"]
+          :data-through [:kst [:get ["through"]]]
+          :finding
+          [:assemble
+           {:key [:get ["id"]]
+            :title [:get ["labels" 0]]
+            :times [:assemble {:source [:kst [:get ["recordedAt"]]]
+                               :expected [:assemble {:at [:kst [:get ["expectedOn"]]]
+                                                     :asserted-by [:literal "Synthetic catalog"]}]}]
+            :state [:assemble {:text [:enum [:get ["phase"]] {"READY" "Recorded" "WAITING" "Needs review"}]
+                               :asserted-by [:literal "Synthetic catalog"]}]
+            :awaits [:enum [:get ["ownerQueue"] :optional]
+                     {"CHECK" {:who :owner :asserted-by "Synthetic catalog"}}]
+            :refs [:assemble [[:assemble {:role [:literal :record]
+                                          :label [:literal "Open the synthetic record"]
+                                          :surface [:literal {:kind "Catalog record" :accepts "fixture URL"}]
+                                          :locator [:get ["record"]]}]]]}]}}]}
