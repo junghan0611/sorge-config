@@ -12,6 +12,12 @@
 ;;>                                                            :label [:literal "Open the issue"]
 ;;>                                                            :surface [:literal {:kind "Issue tracker"}]
 ;;>                                                            :locator [:get ["url"]]}]]]}]}}
+;; 층별 타임라인 예시 (가상 명령): 이벤트 종류와 대상 키를 함께 지정한다.
+;; {:id "sample-events" :kind :layered-timeline
+;;  :opts {:argv ["synthetic-events" "recent"] :events-path ["events"] :errors-path ["errors"]
+;;         :layer-path ["layer"] :title-path ["label"] :instant-path ["instant"] :day-path ["day"]
+;;         :identity-paths [["entity"] ["event"]] :asserted-by "Synthetic register"}}
+;; recorded → source, planned → expected, reported → 제외. 기록 부재나 과거 재현은 단언하지 않는다.
 ;; 같은 리포의 NEXT → Git follow는 NEXT opts의 :git-channel이 Git 채널 id를 가리킨다.
 ;; {:id "sample-git" :kind :git :area {:key "sample" :label "Sample area"} :opts {:root "./synthetic-repo"}}
 ;; {:id "sample-next" :kind :next-card :opts {:root "./synthetic-repo" :git-channel "sample-git"}}

@@ -12,7 +12,7 @@
   (:import [java.time DateTimeException LocalDate OffsetDateTime ZoneOffset]
            [java.time.format DateTimeFormatter]))
 
-(def ^:private json-path
+(def json-path
   [:vector {:max 16} [:or [:string {:min 1}] [:int {:min 0 :max Integer/MAX_VALUE}]]])
 
 (def ^:private expression
@@ -38,10 +38,13 @@
        (let [basename (.toLowerCase (.getName (io/file program)) java.util.Locale/ROOT)]
          (and (seq basename) (not (contains? shells basename))))))
 
+(def argv-schema
+  [:and [:vector {:min 1 :max 33} [:and [:string {:max 4096}] [:re "^[^\\u0000]*$"]]]
+   [:fn #(and (vector? %) (reader-program? (first %)))]])
+
 (def opts-schema
   [:map {:closed true}
-   [:argv [:and [:vector {:min 1 :max 33} [:and [:string {:max 4096}] [:re "^[^\\u0000]*$"]]]
-           [:fn #(and (vector? %) (reader-program? (first %)))]]]
+   [:argv argv-schema]
    [:attests [:set :wci/attest]]
    [:rows-path json-path]
    [:finding [:tuple [:= :assemble]
@@ -65,7 +68,7 @@
               missing))
           data path))
 
-(defn- calendar-time [value]
+(defn calendar-time [value]
   (try
     (if (and (string? value) (re-matches #"[0-9]{4}-[0-9]{2}-[0-9]{2}" value))
       (str (LocalDate/parse value))
@@ -112,34 +115,39 @@
 (defn- stable-key? [k]
   (or (and (string? k) (<= 1 (count k) 256)) (integer? k)))
 
-(defn- mapped-answer [{:keys [argv rows-path finding data-through attests]} {:keys [live]}]
-  (when-not live (adapter/fail! :unsupported-time "fixed argv source cannot replay past knowledge"))
-  (let [_ (when-not (and (vector? argv) (every? string? argv) (reader-program? (first argv)))
-            (adapter/fail! :bad-request "invalid argv for local JSON reader"))
-        env (cond-> {"LC_ALL" "C" "TZ" "UTC"}
+(defn read-json!
+  "Run one trusted fixed argv with a minimal environment and strict JSON output."
+  [argv]
+  (when-not (and (vector? argv) (every? string? argv) (reader-program? (first argv)))
+    (adapter/fail! :bad-request "invalid argv for local JSON reader"))
+  (let [env (cond-> {"LC_ALL" "C" "TZ" "UTC"}
               (System/getenv "PATH") (assoc "PATH" (System/getenv "PATH")))
         {:keys [exit stdout]} (process/execute! argv (constantly true) env)]
     (when-not (zero? exit) (adapter/fail! :unreadable "local JSON reader exited unsuccessfully"))
-    (let [doc (json/parse-one stdout)
-          rows (lookup doc rows-path)
-          bound (if data-through (project doc data-through) missing)]
-      (when-not (vector? rows) (adapter/fail! :contract "mapped JSON rows must be an array"))
-      (when-not (identical? missing bound)
-        (when-not (m/validate (:point @schemas) bound)
-          (adapter/fail! :contract "mapped coverage bound must be a normalized time or calendar day"))
-        (calendar-time bound))
-      (let [items (mapv (fn [row]
-                          (let [result (project row finding) k (:key result)]
-                            (when-not (and (m/validate (:finding @schemas) result)
-                                           (stable-key? k)
-                                           (every? #(or (not (contains? % :key)) (stable-key? (:key %))) (:refs result))
-                                           (every? attests (row-roles result)))
-                              (adapter/fail! :contract "mapped finding violates its declared fields or roles"))
-                            result)) rows)]
-        (when-not (= (count items) (count (into #{} (map :key) items)))
-          (adapter/fail! :contract "mapped findings have duplicate source keys"))
-        (cond-> {:findings items}
-          (not (identical? missing bound)) (assoc :data-through bound))))))
+    (json/parse-one stdout)))
+
+(defn- mapped-answer [{:keys [argv rows-path finding data-through attests]} {:keys [live]}]
+  (when-not live (adapter/fail! :unsupported-time "fixed argv source cannot replay past knowledge"))
+  (let [doc (read-json! argv)
+        rows (lookup doc rows-path)
+        bound (if data-through (project doc data-through) missing)]
+    (when-not (vector? rows) (adapter/fail! :contract "mapped JSON rows must be an array"))
+    (when-not (identical? missing bound)
+      (when-not (m/validate (:point @schemas) bound)
+        (adapter/fail! :contract "mapped coverage bound must be a normalized time or calendar day"))
+      (calendar-time bound))
+    (let [items (mapv (fn [row]
+                        (let [result (project row finding) k (:key result)]
+                          (when-not (and (m/validate (:finding @schemas) result)
+                                         (stable-key? k)
+                                         (every? #(or (not (contains? % :key)) (stable-key? (:key %))) (:refs result))
+                                         (every? attests (row-roles result)))
+                            (adapter/fail! :contract "mapped finding violates its declared fields or roles"))
+                          result)) rows)]
+      (when-not (= (count items) (count (into #{} (map :key) items)))
+        (adapter/fail! :contract "mapped findings have duplicate source keys"))
+      (cond-> {:findings items}
+        (not (identical? missing bound)) (assoc :data-through bound)))))
 
 (defmethod adapter/describe :exec [{:keys [title opts]}]
   {:kind "exec" :title (or title "Local JSON reader")
