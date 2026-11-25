@@ -1,0 +1,13 @@
+;; sorge-config — work-context interface (wci)
+;; SSOT: spec/wci.edn (malli). 코드는 그 키워드만 참조한다.
+;; 런타임: JVM(개발·테스트). 코어는 bb에서도 도는 휴대용 Clojure로 쓴다.
+{:paths ["src" "spec"]
+ :deps  {org.clojure/clojure {:mvn/version "1.12.0"}
+         metosin/malli       {:mvn/version "0.17.0"}
+         org.clojure/data.json {:mvn/version "2.5.1"}}
+ :aliases
+ {:run  {:main-opts ["-m" "wci.cli"]}
+  :test {:extra-paths ["test"]
+         :extra-deps  {io.github.cognitect-labs/test-runner
+                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :main-opts   ["-m" "cognitect.test-runner"]}}}

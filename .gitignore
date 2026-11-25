@@ -1,0 +1,14 @@
+# 어떤 채널을 붙이는지는 기기 로컬이다. 코드는 중립.
+channels.local.edn
+*.local.edn
+
+# Clojure
+.cpcache/
+.nrepl-port
+target/
+.clj-kondo/.cache/
+.lsp/
+
+# 비밀
+.env
+.env.*

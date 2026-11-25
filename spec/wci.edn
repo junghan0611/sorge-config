@@ -1,0 +1,372 @@
+;; =============================================================================
+;; spec/wci.edn — work-context interface (v0.2.0-draft)
+;; =============================================================================
+;;
+;; 이 EDN 하나가 SSOT다. md로 따로 쓰지 않는다. 설명은 주석에 둔다.
+;; 코드는 여기 키워드만 참조한다. OpenAPI 3.1은 여기서 뽑는 파생물이다(나중).
+;; 결정의 근거는 공개 이슈 sorge-config#2 스레드에 있다. 그것이 기록의 자리다.
+;;
+;; 두 겹:
+;;   1. 호출자 계약 — :wci/request → :wci/response  (channels / overview / ask / follow)
+;;   2. 채널 계약   — :channel/describe, :channel/request → :channel/answer
+;;
+;; 코드는 중립이다. 어떤 채널을 붙일지(경로·계정·명령)는 channels.local.edn에
+;; 두고 gitignore 한다. 이 리포에는 채널의 "종류(kind)"와 계약만 있다.
+;;
+;; 원칙:
+;;   - 읽기 전용. 이 인터페이스는 아무것도 쓰거나 보내지 않는다. 원장·스냅샷도 없다.
+;;     과거 시점의 얼개는 저장본이 아니라 원천의 이력에서 다시 세운다(:as-of).
+;;     원천에서 지워졌으면 못 세운다. 그게 정직한 답이다.
+;;   - 못 읽은 채널은 에러다. 0건으로 위장하지 않는다 (경고 말고 에러).
+;;   - 어댑터가 계약을 어기면(잘못된 시각, 모양 위반) 그것도 에러(:contract)다.
+;;   - 시간축은 KST(+09:00) 하나. 정규식은 모양만 본다. 달력 유효성은 코어가
+;;     java.time으로 엄격 파싱해 검사한다. 문자열로 정렬하지 않는다.
+;;   - 날짜만 아는 값은 [그날 00:00, 다음날 00:00) 구간이다. 00:00 사건이 아니다.
+;;   - 응답은 크기 상한 안. 넘치면 조용히 자르지 않는다: :truncated + :rest.
+;;   - 본문은 싣지 않는다. 제목·원천 저자가 쓴 요지(:gist)·시각·참조만.
+;;   - 깊이 번호 없음. follow는 좁히거나 깊어진다. 더 없으면 :floor true.
+;;   - 같은 일을 이름으로 합치지 않는다. 원천이 증언한 :same-as 만 잇는다.
+;;
+;; 유도 필드 (어댑터가 주지 않는다. 코어가 계산한다):
+;;   coverage :ok/:empty  ← 찾은 수            :floor ← non-terminal ref 없음 ∧ :rest 없음
+;;   :stale               ← 부재 술어인데 :data-through < :as-of
+;;   :order               ← 요청 모드와 술어의 역할에서
+;;   ref 토큰             ← 어댑터의 :key 를 코어가 암호화·서명 (AES-GCM, 만료 포함)
+;;
+;; 코드가 지키는 교차 규칙 (스키마 밖, 이름 붙은 불변식 — 적합성 테스트가 있다):
+;;   I1 :truncated true ⇔ :rest 존재
+;;   I2 coverage에 없는 채널의 finding 금지. :excluded/:uninterpreted 채널의 finding 금지
+;;   I3 :floor true 면 non-terminal ref 없음
+;;   I4 error :partial 에 실패 채널의 finding·ref 없음
+;;   I5 include ∩ exclude = ∅, 모르는 채널 id는 :bad-request
+;;   I6 모든 시각은 달력상 유효, interval 은 from < to
+;;   I7 정렬은 :order 체인으로 전순서. 마지막 고리는 [:channel :key]
+;;   I8 :uninterpreted 답은 findings 가 비어 있다
+;;
+;; 버전 정책: v0.x 호환 보장 없음. 응답마다 :spec-version 정확히.
+;; CLI exit: 0 success · 1 error 봉투 · 2 호출 위반 · 3 설정/IO
+;; =============================================================================
+
+{:spec-version "0.2.0-draft"
+
+ :constants
+ {:overview-horizon-days 14       ;; overview: as-of 앞뒤 이 범위의 움직임·예정
+  :default-max-items     10
+  :default-max-bytes     4096     ;; CLI JSON 출력 직렬화 기준, 코어가 잰다
+  :max-bytes-cap         16384}
+
+ :registry
+ {;; ───────────────────────── 원자 ─────────────────────────
+  :wci/kst      [:re "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?\\+09:00$"]
+  :wci/date     [:re "^\\d{4}-\\d{2}-\\d{2}$"]
+  :wci/point    [:or :wci/kst :wci/date]
+  :wci/interval [:map {:closed true} [:from :wci/point] [:to :wci/point]]
+  :wci/when     [:or :wci/kst :wci/date :wci/interval]
+
+  :wci/channel-id [:re "^[a-z][a-z0-9-]{0,31}$"]
+  :wci/ref-token  [:string {:min 16 :max 1024}]   ;; 불투명. 호출자는 해석하지 않는다
+  :wci/attester   [:string {:min 1 :max 80}]      ;; 단언한 원천 (사람이 읽는 말)
+
+  ;; 시각 역할 — 무엇의 시각인지 섞지 않는다
+  ;;   :source         원 기록 시각 (커밋, 이슈 생성, 메일 수신, 시간 블록)
+  ;;   :last-movement  마지막 움직임. 정확히 모르고 상한만 알면 {:before t}
+  ;;   :expected       앞을 보는 시각(마감·예정). 반드시 단언한 원천을 단다
+  :wci/time-role [:enum :source :last-movement :expected]
+
+  ;; 채널이 증언할 수 있는 것. 증언하지 않는 것에 걸린 술어는 :uninterpreted
+  :wci/attest [:enum :source :last-movement :expected :awaits :area :gist :state]
+
+  :wci/times
+  [:map {:closed true}
+   [:source {:optional true} :wci/when]
+   [:last-movement {:optional true}
+    [:or :wci/point [:map {:closed true} [:before :wci/point]]]]
+   [:expected {:optional true}
+    [:map {:closed true} [:at :wci/when] [:asserted-by :wci/attester]]]]
+
+  ;; ───────────────────────── 동료 수준의 얼개 ─────────────────────────
+  ;; 코어는 요약을 지어내지 않는다. 원천 저자가 이미 쓴 것을 나른다.
+  ;;   :gist    원천 저자가 요지로 쓴 한 줄 (예: NEXT.md 의 Current 줄)
+  ;;   :awaits  원천이 단언한 "누구를 기다리나" (예: 라벨 human:needs-review)
+  ;;   :state   원천이 단언한 상태 (예: 막힘). "움직임 없음"과 섞지 않는다
+  ;;   :area    원천이 증언한 소속 (리포, 프로젝트). overview 묶음의 열쇠
+  :wci/gist   [:map {:closed true}
+               [:text [:string {:min 1 :max 200}]]
+               [:asserted-by :wci/attester]
+               [:at {:optional true} :wci/when]]
+  :wci/awaits [:map {:closed true}
+               [:who [:enum :human :owner :external]]
+               [:asserted-by :wci/attester]
+               [:since {:optional true} :wci/when]]
+  :wci/state  [:map {:closed true}
+               [:text [:string {:min 1 :max 80}]]
+               [:asserted-by :wci/attester]]
+  :wci/area   [:map {:closed true}
+               [:key [:string {:min 1 :max 120}]]  ;; 안 움직이는 열쇠 (id)
+               [:label [:string {:min 1 :max 120}]]]
+
+  ;; ───────────────────────── 참조 ─────────────────────────
+  ;; 역할로 갈린다. 따라가기 전에 무엇으로 이어지는지, 끝인지 보인다.
+  ;; 주소는 안 움직이는 id다. 이름(label)은 움직여도 된다.
+  ;;   :garden-id      살아 있는 형제 → 호출자가 entwurf_v2 로 묻는다
+  ;;   :repo-owner     그 리포의 담당자 → 호출자가 그 cwd에서 새 형제를 연다
+  ;;   :issue-tracker  요청을 남길 작업면
+  :wci/address
+  [:multi {:dispatch :kind}
+   [:garden-id     [:map {:closed true} [:kind [:= :garden-id]]
+                    [:id [:re "^\\d{8}T\\d{6}-[0-9a-f]{6}$"]]]]
+   [:repo-owner    [:map {:closed true} [:kind [:= :repo-owner]]
+                    [:repo [:string {:min 1}]]
+                    [:doc-id {:optional true} [:re "^\\d{8}T\\d{6}$"]]]]
+   [:issue-tracker [:map {:closed true} [:kind [:= :issue-tracker]]
+                    [:url [:re "^https://"]]]]]
+
+  :wci/contact
+  [:map {:closed true}
+   [:address :wci/address]
+   [:scope {:optional true} [:string {:max 120}]]      ;; 무엇을 아는가
+   [:last-active {:optional true}
+    [:or [:map {:closed true} [:at :wci/kst] [:observed-at :wci/kst]]
+         [:enum :hidden :unknown]]]
+   [:draft {:optional true} [:string {:max 600}]]]     ;; 보낼 질문 초안. 보내는 건 호출자
+
+  :wci/ref
+  [:multi {:dispatch :role}
+   [:more     [:map {:closed true} [:role [:= :more]]     [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
+   [:history  [:map {:closed true} [:role [:= :history]]  [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
+   [:evidence [:map {:closed true} [:role [:= :evidence]] [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
+   [:owner    [:map {:closed true} [:role [:= :owner]]    [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
+   [:rest     [:map {:closed true} [:role [:= :rest]]     [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]]]
+   [:same-as  [:map {:closed true} [:role [:= :same-as]]  [:terminal [:= false]] [:label :string] [:ref :wci/ref-token]
+               [:channel :wci/channel-id]]]
+   [:record   [:map {:closed true} [:role [:= :record]]   [:terminal [:= true]] [:label :string]
+               [:surface [:map {:closed true} [:kind [:string {:min 1}]] [:accepts {:optional true} :string]]]
+               [:locator [:string {:min 1}]]]]          ;; URL, path#anchor, sha …
+   [:contact  [:map {:closed true} [:role [:= :contact]]  [:terminal [:= true]] [:label :string]
+               [:contact :wci/contact]]]]
+
+  ;; ───────────────────────── 발견 ─────────────────────────
+  :wci/finding
+  [:map {:closed true}
+   [:channel :wci/channel-id]
+   [:title [:string {:min 1 :max 200}]]                ;; 원천의 사람 제목. 코드명 아님
+   [:times :wci/times]
+   [:gist {:optional true} :wci/gist]
+   [:awaits {:optional true} :wci/awaits]
+   [:state {:optional true} :wci/state]
+   [:area {:optional true} :wci/area]
+   [:refs [:vector :wci/ref]]]
+
+  ;; ───────────────────────── 커버리지 ─────────────────────────
+  ;;   :ok             읽었고 뭔가 있었다
+  ;;   :empty          읽었고 0건 (ok 아님)
+  ;;   :excluded       호출자가 뺐다
+  ;;   :uninterpreted  읽었지만 질문·술어를 적용하지 못했다 (:reason 필수)
+  ;;   :stale          읽었지만 원천이 :as-of 까지 오지 않아 부재를 판정할 수 없다
+  ;; 못 읽음·시점 미지원·계약 위반은 여기 오지 않는다. 에러 봉투로 간다.
+  :wci/coverage
+  [:map {:closed true}
+   [:channel :wci/channel-id]
+   [:status [:enum :ok :empty :excluded :uninterpreted :stale]]
+   [:read-at {:optional true} :wci/kst]
+   [:data-through {:optional true} :wci/point]         ;; 원천의 최신 관측 상한
+   [:matched-by {:optional true} [:string {:max 120}]]
+   [:reason {:optional true} [:string {:max 200}]]]
+
+  ;; ───────────────────────── 요청 ─────────────────────────
+  :wci/budget
+  [:map {:closed true}
+   [:max-bytes {:optional true} [:int {:min 512 :max 16384}]]
+   [:max-items {:optional true} [:int {:min 1 :max 50}]]]
+
+  ;; :as-of 는 "지식 상한"이다: 그 시각 전에 기록된 것만으로 답한다.
+  ;; 과거 :as-of 는 원천 이력에서 재현한다. 채널이 :replay 가 아니면 :unsupported-time.
+  ;; 미래를 보는 술어(:expected)는 :as-of 와 모순되지 않는다 — 기록은 과거, 예정은 미래.
+  :wci/scope
+  [:map {:closed true}
+   [:as-of {:optional true} :wci/point]
+   [:include {:optional true} [:vector {:min 1} :wci/channel-id]]
+   [:exclude {:optional true} [:vector {:min 1} :wci/channel-id]]]
+
+  ;; 역할 술어. 상대 일수는 :as-of 기준으로 코어가 푼다. 판정도 코어가 finding 의
+  ;; :times 에 사후 적용한다(채널이 미리 좁혀도 되지만 판정은 코어).
+  ;;   [:expected :within [0 14]]     as-of+0d ≤ expected < as-of+14d
+  ;;   [:last-movement :before -7]    last-movement < as-of−7d   (부재 판정 → :stale 규칙)
+  ;;   [:source :after -3]            source ≥ as-of−3d
+  ;;   [:awaits :is :human]
+  :wci/predicate
+  [:or
+   [:tuple :wci/time-role [:= :within] [:tuple :int :int]]
+   [:tuple :wci/time-role [:enum :before :after] :int]
+   [:tuple [:= :awaits] [:= :is] [:enum :human :owner :external]]]
+
+  :wci/request
+  [:multi {:dispatch :op}
+   [:channels [:map {:closed true} [:op [:= :channels]]]]
+   ;; 빈손 시작. 뜻은 코어가 고정: horizon 안의 움직임·예정, 또는 :awaits 있는 것.
+   [:overview [:map {:closed true}
+               [:op [:= :overview]]
+               [:scope {:optional true} :wci/scope]
+               [:budget {:optional true} :wci/budget]]]
+   ;; 자유 질문(채널이 해석, :matched-by 로 밝힘) 또는 역할 술어 — 정확히 하나.
+   [:ask [:or
+          [:map {:closed true}
+           [:op [:= :ask]]
+           [:question [:string {:min 1 :max 500}]]
+           [:scope {:optional true} :wci/scope]
+           [:budget {:optional true} :wci/budget]]
+          [:map {:closed true}
+           [:op [:= :ask]]
+           [:where [:vector {:min 1 :max 4} :wci/predicate]]
+           [:scope {:optional true} :wci/scope]
+           [:budget {:optional true} :wci/budget]]]]
+   [:follow [:map {:closed true}
+             [:op [:= :follow]]
+             [:ref :wci/ref-token]
+             [:budget {:optional true} :wci/budget]]]]
+
+  ;; ───────────────────────── 응답 ─────────────────────────
+  ;; 정렬 체인을 그대로 선언한다. 결측은 그 고리에서 맨 뒤.
+  ;; 날짜 구간의 정렬 키: :expected 는 구간 끝, 나머지는 구간 시작.
+  :wci/order
+  [:vector {:min 1}
+   [:tuple [:enum :area :expected :last-movement :source :channel :key] [:enum :asc :desc]]]
+
+  :wci/success
+  [:map {:closed true}
+   [:spec-version :string]
+   [:outcome [:= :success]]
+   [:as-of :wci/kst]
+   [:observed-at :wci/kst]
+   [:coverage [:vector :wci/coverage]]
+   [:order :wci/order]
+   [:findings [:vector :wci/finding]]
+   [:rest {:optional true}
+    [:map {:closed true}
+     [:count {:optional true} [:int {:min 1}]]       ;; 정확히 알 때만
+     [:ref :wci/ref]]]
+   [:floor :boolean]
+   [:truncated :boolean]]
+
+  :wci/error-kind
+  [:enum :unreadable        ;; 요청한 채널을 못 읽음
+         :unsupported-time  ;; 과거 :as-of 를 재현할 수 없는 채널
+         :contract          ;; 어댑터가 채널 계약을 어김
+         :unknown-ref :ref-expired :ref-gone :forbidden
+         :bad-request
+         :budget-too-small] ;; 최소 응답도 상한에 안 들어감
+
+  ;; :partial 은 에러 봉투 안에만 산다 — 성공으로 소비될 수 없게 (I4).
+  :wci/error
+  [:map {:closed true}
+   [:spec-version :string]
+   [:outcome [:= :error]]
+   [:as-of {:optional true} :wci/kst]
+   [:observed-at :wci/kst]
+   [:failures [:vector {:min 1}
+               [:map {:closed true}
+                [:kind :wci/error-kind]
+                [:channel {:optional true} :wci/channel-id]
+                [:message [:string {:max 300}]]]]]
+   [:retry {:optional true}
+    [:map {:closed true} [:exclude [:vector {:min 1} :wci/channel-id]]]]
+   [:partial {:optional true}
+    [:map {:closed true}
+     [:coverage [:vector :wci/coverage]]
+     [:findings [:vector :wci/finding]]]]]
+
+  :wci/channel-info
+  [:map {:closed true}
+   [:channel :wci/channel-id]
+   [:kind :string]
+   [:title :string]
+   [:as-of-support [:enum :replay :live-only]]
+   [:question [:enum :keyword :none]]
+   [:attests [:set :wci/attest]]
+   [:contact-liveness [:enum :show :hide :none]]
+   [:status [:enum :ready :unreadable]]
+   [:source-tz {:optional true} :string]]
+
+  :wci/channels
+  [:map {:closed true}
+   [:spec-version :string]
+   [:outcome [:= :success]]
+   [:observed-at :wci/kst]
+   [:channels [:vector :wci/channel-info]]]
+
+  :wci/response [:or :wci/success :wci/error :wci/channels]
+
+  ;; ───────────────────────── 채널(어댑터) 계약 ─────────────────────────
+  ;; 어댑터 = Clojure multimethod 셋, (:kind cfg) 로 dispatch:
+  ;;   (describe cfg)        → :channel/describe
+  ;;   (answer cfg req)      → :channel/answer      req = :channel/request
+  ;;   (expand cfg key req)  → :channel/answer      follow: key 는 어댑터가 준 :key
+  ;; 실패는 (throw (ex-info msg {:wci/error-kind k})). 실패를 빈 답으로 돌려주면 계약 위반.
+  ;; 어댑터는 토큰·정렬·예산·상태를 모른다. 코어 몫이다.
+
+  :channel/describe
+  [:map {:closed true}
+   [:kind :string]
+   [:title :string]
+   [:as-of-support [:enum :replay :live-only]]
+   [:question [:enum :keyword :none]]
+   [:attests [:set :wci/attest]]
+   [:contact-liveness [:enum :show :hide :none]]
+   [:source-tz {:optional true} :string]]
+
+  :channel/request
+  [:map {:closed true}
+   [:mode [:enum :overview :question :where :follow]]
+   [:as-of :wci/kst]
+   [:live :boolean]                                    ;; as-of 가 지금이면 true
+   [:question {:optional true} :string]
+   [:where {:optional true} [:vector :wci/predicate]]
+   [:horizon-days :int]]
+
+  :channel/ref-seed
+  [:multi {:dispatch :role}
+   [:more     [:map {:closed true} [:role [:= :more]]     [:label :string] [:key :any]]]
+   [:history  [:map {:closed true} [:role [:= :history]]  [:label :string] [:key :any]]]
+   [:evidence [:map {:closed true} [:role [:= :evidence]] [:label :string] [:key :any]]]
+   [:owner    [:map {:closed true} [:role [:= :owner]]    [:label :string] [:key :any]]]
+   [:same-as  [:map {:closed true} [:role [:= :same-as]]  [:label :string]
+               [:channel :wci/channel-id] [:key :any]]]
+   [:record   [:map {:closed true} [:role [:= :record]]   [:label :string]
+               [:surface [:map {:closed true} [:kind [:string {:min 1}]] [:accepts {:optional true} :string]]]
+               [:locator [:string {:min 1}]]]]
+   [:contact  [:map {:closed true} [:role [:= :contact]]  [:label :string]
+               [:contact :wci/contact]]]]
+
+  :channel/finding
+  [:map {:closed true}
+   [:key :any]                                         ;; 원천 고유 키 (전순서 마지막 고리)
+   [:title [:string {:min 1 :max 200}]]
+   [:times :wci/times]
+   [:gist {:optional true} :wci/gist]
+   [:awaits {:optional true} :wci/awaits]
+   [:state {:optional true} :wci/state]
+   [:area {:optional true} :wci/area]
+   [:refs [:vector :channel/ref-seed]]]
+
+  :channel/answer
+  [:map {:closed true}
+   [:findings [:vector :channel/finding]]
+   [:matched-by {:optional true} [:string {:max 120}]]
+   [:data-through {:optional true} :wci/point]
+   [:uninterpreted {:optional true} [:map {:closed true} [:reason [:string {:min 1 :max 200}]]]]]
+
+  ;; 로컬 설정 (channels.local.edn, gitignore). 커밋되는 것은 channels.example.edn.
+  ;; :opts 는 kind 별 스키마로 어댑터가 엄격 검증한다. 셸 문자열 금지, 명령은 argv 벡터.
+  :channel/config
+  [:map {:closed true}
+   [:channels
+    [:vector {:min 1}
+     [:map {:closed true}
+      [:id :wci/channel-id]
+      [:kind :keyword]
+      [:title {:optional true} :string]
+      [:opts {:optional true} :map]]]]
+   [:token {:optional true}
+    [:map {:closed true}
+     [:key-env [:string {:min 1}]]                     ;; 키가 든 환경변수 이름. 없으면 기동 에러
+     [:ttl-hours {:optional true} [:int {:min 1 :max 720}]]]]]}}
