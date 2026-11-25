@@ -223,13 +223,14 @@
 
 (deftest dropped-values-never-reach-projection-or-errors
   (let [secret "synthetic-private-payload"
-        with-content {:id "x" :label "Synthetic metadata" :nested {:body {:text secret}}}
+        hidden-key "synthetic-private-key"
+        with-content {:id "x" :label "Synthetic metadata" :nested {:body {hidden-key secret}}}
         make-channel (fn [argv] {:id "metadata" :kind :exec
                                  :opts {:argv argv :rows-path [] :attests #{}
                                         :allowed-json-keys #{"id" "label" "nested"}
-                                        :drop-json-keys #{"body" "text"}
+                                        :drop-json-keys #{"body"}
                                         :finding [:assemble {:key [:get ["id"]] :title [:get ["label"]] :times [:literal {}]
-                                                             :refs [:literal []] :by [:get ["nested" "body" "text"] :optional]}]}})
+                                                             :refs [:literal []] :by [:get ["nested" "body" hidden-key] :optional]}]}})
         core-opts {:now (:as-of live) :token-secret "test-secret-0123456789"}]
     (with-fake-cli (json/generate-string [with-content])
       (fn [program argv]
@@ -241,11 +242,33 @@
           (is (not (str/includes? (core/->json projected) secret)))
           (is (= :contract (:wci/error-kind (failure-data #(adapter/answer
                                                             (update ch :opts dissoc :allowed-json-keys) live)))))
-          (fake-output! program (json/generate-string [(assoc-in with-content [:nested :body :unknown] secret)]))
+          (is (not (str/includes? (core/->json projected) hidden-key)))
+          (fake-output! program (json/generate-string [(assoc-in with-content [:nested :unknown] secret)]))
           (let [r (core/run cfg {:op :overview} core-opts)]
             (is (= [:contract] (mapv :kind (:failures r))))
             (is (not (str/includes? (core/->json r) secret)))
+            (is (not (str/includes? (core/->json r) hidden-key)))
             (is (not (str/includes? (core/->json r) "unknown")))))))))
+
+(deftest kst-fractional-clock-requires-explicit-second-floor
+  (with-fake-cli
+   (json/generate-string [{:id "x" :at "2026-11-25T15:59:59.999999Z"}])
+   (fn [program argv]
+     (let [clock [:get ["at"]]
+           ch {:id "clock" :kind :exec
+               :opts {:argv argv :rows-path [] :attests #{:source}
+                      :finding [:assemble {:key [:get ["id"]] :title [:literal "Synthetic signal"] :refs [:literal []]
+                                           :times [:assemble {:source [:kst clock {:truncate :second}]}]}]}}
+           answer (fn [ch] (adapter/answer (first (:channels (config/validate-config {:channels [ch]}))) live))
+           at (fn [ch] (get-in (answer ch) [:findings 0 :times :source]))]
+       (is (= "2026-11-26T00:59:59+09:00" (at ch)))
+       (is (= :contract (:wci/error-kind (failure-data #(answer (assoc-in ch [:opts :finding 1 :times 1 :source] [:kst clock]))))))
+       (is (= :bad-request (:wci/error-kind (failure-data #(answer (assoc-in ch [:opts :finding 1 :times 1 :source]
+                                                                            [:kst clock {:truncate :minute}]))))))
+       (fake-output! program (json/generate-string [{:id "x" :at "2026-11-25"}]))
+       (is (= "2026-11-25" (at ch)))
+       (fake-output! program (json/generate-string [{:id "x" :at "2026-11-25T15:59:59.999"}]))
+       (is (= :contract (:wci/error-kind (failure-data #(answer ch)))))))))
 
 (deftest malformed-or-incomplete-input-is-an-error-not-false-empty
   (let [source @catalog-text

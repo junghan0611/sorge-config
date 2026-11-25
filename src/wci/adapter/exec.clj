@@ -24,6 +24,7 @@
                      [:tuple [:= :literal] :any]
                      [:tuple [:= :enum] [:ref ::expr] [:map-of :any :any]]
                      [:tuple [:= :kst] [:ref ::expr]]
+                     [:tuple [:= :kst] [:ref ::expr] [:map {:closed true} [:truncate [:= :second]]]]
                      [:tuple [:= :when-eq] [:ref ::expr] :any [:ref ::expr]]
                      [:tuple [:= :when-present] [:ref ::expr] [:ref ::expr]]
                      [:tuple [:= :assemble]
@@ -75,19 +76,22 @@
               missing))
           data path))
 
-(defn calendar-time [value]
-  (try
-    (if (and (string? value) (re-matches #"[0-9]{4}-[0-9]{2}-[0-9]{2}" value))
-      (str (LocalDate/parse value))
-      (let [t (when (string? value) (OffsetDateTime/parse value))]
-        (when (or (nil? t) (not (zero? (.getNano t))))
-          (adapter/fail! :contract "mapped timestamp needs an explicit offset and whole seconds"))
-        (let [stamp (.format (.withOffsetSameInstant t (ZoneOffset/ofHours 9))
-                             DateTimeFormatter/ISO_OFFSET_DATE_TIME)]
-          (when-not (re-matches #"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+09:00" stamp)
-            (adapter/fail! :contract "mapped timestamp exceeds the WCI calendar range"))
-          stamp)))
-    (catch DateTimeException _ (adapter/fail! :contract "mapped timestamp is not an offset time or calendar day"))))
+(defn calendar-time
+  ([value] (calendar-time value nil))
+  ([value {:keys [truncate]}]
+   (try
+     (if (and (string? value) (re-matches #"[0-9]{4}-[0-9]{2}-[0-9]{2}" value))
+       (str (LocalDate/parse value))
+       (let [t (when (string? value) (OffsetDateTime/parse value))]
+         (when (or (nil? t) (and (not= :second truncate) (not (zero? (.getNano t)))))
+           (adapter/fail! :contract "mapped timestamp needs an explicit offset and whole seconds"))
+         (let [t (if (= :second truncate) (.withNano t 0) t)
+               stamp (.format (.withOffsetSameInstant t (ZoneOffset/ofHours 9))
+                              DateTimeFormatter/ISO_OFFSET_DATE_TIME)]
+           (when-not (re-matches #"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+09:00" stamp)
+             (adapter/fail! :contract "mapped timestamp exceeds the WCI calendar range"))
+           stamp)))
+     (catch DateTimeException _ (adapter/fail! :contract "mapped timestamp is not an offset time or calendar day")))))
 
 (defn- project [data [op arg option branch]]
   (case op
@@ -101,7 +105,7 @@
               (identical? missing v) missing
               (contains? option v) (get option v)
               :else (adapter/fail! :contract "mapped JSON value is outside the declared enum")))
-    :kst (let [v (project data arg)] (if (identical? missing v) missing (calendar-time v)))
+    :kst (let [v (project data arg)] (if (identical? missing v) missing (calendar-time v option)))
     :when-eq (let [v (project data arg)]
                (if (and (not (identical? missing v)) (= v option))
                  (project data branch)
@@ -133,22 +137,20 @@
     (when-not (zero? exit) (adapter/fail! :unreadable "local JSON reader exited unsuccessfully"))
     (json/parse-one stdout)))
 
-(defn- check-json-keys! [allowed doc]
-  (doseq [obj (filter map? (tree-seq coll? seq doc))]
-    (when-not (every? allowed (keys obj))
-      (adapter/fail! :contract "local JSON reader returned a field outside the allowed metadata"))))
-
-(defn- remove-json-keys [drop-keys value]
+(defn- checked-metadata [allowed drop-keys value]
   (cond
-    (map? value) (into {} (keep (fn [[k v]]
-                                  (when-not (drop-keys k) [k (remove-json-keys drop-keys v)]))) value)
-    (vector? value) (mapv #(remove-json-keys drop-keys %) value)
+    (map? value) (reduce-kv (fn [out k v]
+                              (cond
+                                ;; Discard the entire value, without visiting child keys.
+                                (contains? drop-keys k) out
+                                (contains? allowed k) (assoc out k (checked-metadata allowed drop-keys v))
+                                :else (adapter/fail! :contract "local JSON reader returned a field outside the allowed metadata")))
+                            {} value)
+    (vector? value) (mapv #(checked-metadata allowed drop-keys %) value)
     :else value))
 
 (defn- metadata-doc [doc allowed drop-keys]
-  ;; Validate even discarded subtrees; a known parent does not attest unknown child keys.
-  (when (or allowed drop-keys) (check-json-keys! (into (or allowed #{}) drop-keys) doc))
-  (if (seq drop-keys) (remove-json-keys drop-keys doc) doc))
+  (if (or allowed drop-keys) (checked-metadata allowed drop-keys doc) doc))
 
 (defn- mapped-answer [{:keys [argv rows-path finding data-through attests allowed-json-keys drop-json-keys]} {:keys [live]}]
   (when-not live (adapter/fail! :unsupported-time "fixed argv source cannot replay past knowledge"))
