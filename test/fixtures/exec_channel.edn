@@ -3,7 +3,7 @@
 ;; :kst accepts an offset timestamp or a calendar day. :assemble selects fields/refs.
 {:channels
  [{:id "catalog" :kind :exec :title "Synthetic catalog"
-   :opts {:argv ["cat" "--" "test/fixtures/exec_catalog.json"]
+   :opts {:argv ["synthetic-catalog" "--json"]
           :attests #{:source :expected :awaits :state}
           :rows-path ["items"]
           :data-through [:kst [:get ["through"]]]

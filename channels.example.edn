@@ -3,6 +3,15 @@
 ;; 여기에는 합성 fixture 만 둔다. 실제 경로·계정·명령은 로컬 파일에만.
 ;; 고정 argv와 JSON 필드 매핑의 합성 예시: test/fixtures/exec_channel.edn.
 ;; :exec에는 운영자가 신뢰하는 읽기 전용 프로그램만 지정한다. 임의 코드를 격리하는 기능은 아니다.
+;; 이슈 연결 예시 (아래 한 엔트리를 로컬 설정의 :channels 벡터에 추가; 명령은 가상):
+;;> {:id "synthetic-issues" :kind :exec :title "Synthetic issues"
+;;>  :opts {:argv ["synthetic-issue-list" "--json"] :rows-path ["issues"] :attests #{:source}
+;;>         :finding [:assemble {:key [:get ["number"]] :title [:get ["title"]]
+;;>                              :times [:assemble {:source [:kst [:get ["createdAt"]]]}]
+;;>                              :refs [:assemble [[:assemble {:role [:literal :record]
+;;>                                                            :label [:literal "Open the issue"]
+;;>                                                            :surface [:literal {:kind "Issue tracker"}]
+;;>                                                            :locator [:get ["url"]]}]]]}]}}
 {:channels
  [{:id "tracker" :kind :fixture :title "Synthetic tracker"
    :opts {:path "test/fixtures/tracker.edn"}}
