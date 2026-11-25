@@ -1,5 +1,7 @@
 (ns wci.adapter.exec
-  "Trusted local argv -> bounded JSON -> a closed WCI finding. No evaluator or shell."
+  "Trusted local argv -> bounded JSON -> a closed WCI finding. No evaluator or shell.
+  The mapping vocabulary stops at seven operations: no regex, and only
+  :when-eq and :when-present may conditionally project a value."
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [malli.core :as m]
@@ -21,6 +23,8 @@
                      [:tuple [:= :literal] :any]
                      [:tuple [:= :enum] [:ref ::expr] [:map-of :any :any]]
                      [:tuple [:= :kst] [:ref ::expr]]
+                     [:tuple [:= :when-eq] [:ref ::expr] :any [:ref ::expr]]
+                     [:tuple [:= :when-present] [:ref ::expr] [:ref ::expr]]
                      [:tuple [:= :assemble]
                       [:or [:map-of :keyword [:ref ::expr]] [:vector [:ref ::expr]]]]]}}
    [:ref ::expr]])
@@ -75,7 +79,7 @@
           stamp)))
     (catch DateTimeException _ (adapter/fail! :contract "mapped timestamp is not an offset time or calendar day"))))
 
-(defn- project [data [op arg option]]
+(defn- project [data [op arg option branch]]
   (case op
     :get (let [v (lookup data arg)]
            (when (and (identical? missing v) (not= :optional option))
@@ -88,6 +92,14 @@
               (contains? option v) (get option v)
               :else (adapter/fail! :contract "mapped JSON value is outside the declared enum")))
     :kst (let [v (project data arg)] (if (identical? missing v) missing (calendar-time v)))
+    :when-eq (let [v (project data arg)]
+               (if (and (not (identical? missing v)) (= v option))
+                 (project data branch)
+                 missing))
+    :when-present (let [v (project data arg)]
+                    (if (or (identical? missing v) (nil? v))
+                      missing
+                      (project data option)))
     :assemble (if (map? arg)
                 (into {} (keep (fn [[k expr]]
                                  (let [v (project data expr)]

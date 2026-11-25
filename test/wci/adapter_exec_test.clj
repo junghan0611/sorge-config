@@ -111,6 +111,37 @@
       (is (= 3 (:wci/exit-code
                 (failure-data #(config/validate-config (assoc-in @cfg-doc [:channels 0 :opts k] v)))))))))
 
+(deftest guards-project-only-source-authorized-fields
+  (let [rows [{:id "missing"} {:id "null" :value nil} {:id "false" :value false}
+              {:id "other" :value "accepted-state"} {:id "true" :value true :link "https://feed.invalid/item"}]
+        value [:get ["value"] :optional]
+        record [:assemble {:role [:literal :record] :label [:literal "Open item"]
+                           :surface [:literal {:kind "Synthetic feed"}]
+                           :locator [:get ["link"]]}]
+        finding [:assemble {:key [:get ["id"]] :title [:literal "Synthetic item"] :times [:literal {}]
+                            :state [:when-present value [:literal {:text "Value present" :asserted-by "Synthetic feed"}]]
+                            :refs [:assemble [[:when-eq value true record]]]}]]
+    (with-fake-cli
+     (json/generate-string {:items rows})
+     (fn [_ argv]
+       (let [cfg (-> {:channels [{:id "guards" :kind :exec
+                                  :opts {:argv argv :rows-path ["items"] :attests #{:state} :finding finding}}]}
+                     config/validate-config :channels first)
+             answer #(:findings (adapter/answer % live))
+             projected (answer cfg)]
+         (is (= [false false true true true] (mapv #(contains? % :state) projected)))
+         (is (= [0 0 0 0 1] (mapv #(count (:refs %)) projected)))
+         (is (= "https://feed.invalid/item" (get-in (last projected) [:refs 0 :locator])))
+         (is (= [0 1 0 0 0]
+                (mapv #(count (:refs %))
+                      (answer (assoc-in cfg [:opts :finding 1 :refs 1 0]
+                                        [:when-eq value nil [:literal {:role :record :label "Null marker"
+                                                                      :surface {:kind "Synthetic feed"}
+                                                                      :locator "synthetic:null"}]])))))
+         (is (= :contract
+                (:wci/error-kind (failure-data #(answer (assoc-in cfg [:opts :finding 1 :title]
+                                                                  [:when-present value [:literal "Required title"]])))))))))))
+
 (deftest malformed-or-incomplete-input-is-an-error-not-false-empty
   (let [source @catalog-text
         run #(failure-data (fn [] (adapter/answer % live)))]
