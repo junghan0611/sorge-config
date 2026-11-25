@@ -35,7 +35,9 @@
     (is (= [[:expected :asc] [:last-movement :asc]] (take 2 (:order r))))
     (testing "a channel that cannot attest due dates says so; it is not 'no matches'"
       (is (= :uninterpreted (status r "notes")))
-      (is (re-find #"does not attest" (:reason (second (:coverage r))))))))
+      (is (re-find #"does not attest" (:reason (second (:coverage r)))))
+      (is (some #(re-find #"^· uninterpreted — channel does not attest .*: notes$" %) (w/lines r))
+          "lines fold one status and reason into one line"))))
 
 (deftest case-3-excluded-is-not-empty-is-not-uninterpreted
   (let [r (w/ok! (w/ask (c) "no such term" {:exclude ["notes"]}))]
@@ -48,12 +50,12 @@
         r (w/overview (c broken))]
     (is (= :error (:outcome r)))
     (is (= [{:kind :unreadable :channel "notes"}] (mapv #(select-keys % [:kind :channel]) (:failures r))))
-    (is (= {:exclude ["notes"]} (:retry r)))
+    (is (= {:scope {:exclude ["notes"]}} (:retry r)))
     (is (every? #(= "tracker" (:channel %)) (get-in r [:partial :findings])))
     (is (false? (get-in r [:partial :truncated])) "all tracker evidence fits the default budget")
     (is (thrown-with-msg? clojure.lang.ExceptionInfo #"unreadable notes" (w/ok! r)))
-    (testing "the retry it suggests succeeds"
-      (is (= :success (:outcome (w/overview (c broken) {:exclude ["notes"]})))))))
+    (testing "the retry scope is sent back as it is, and succeeds"
+      (is (= :success (:outcome (w/overview (c broken) (get-in r [:retry :scope]))))))))
 
 (deftest case-5-past-as-of-is-rebuilt-or-refused
   (let [r (w/overview (c) {:as-of "2026-11-19T08:59:59+09:00"})]

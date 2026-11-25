@@ -4,7 +4,7 @@
   어댑터는 원천을 읽어 :channel/answer 만 돌려준다. 나머지는 전부 여기 몫이다:
   요청 검증 → 채널 선택 → 시점 판정 → 어댑터 답 검증(:contract) → 술어 판정 →
   커버리지 유도(:ok/:empty/:excluded/:uninterpreted/:stale) → 전순서 정렬 →
-  예산과 이어받기(:rest) → 토큰 → 봉투 → 불변식 I1–I8 자가검증.
+  예산과 이어받기(:rest) → 토큰 → 봉투 → 불변식 I1–I9 자가검증.
 
   자가검증이 깨지면 그것은 응답이 아니라 코어의 버그다. ex-info {:wci/internal …}
   로 터진다. 잘못된 봉투를 내보내지 않는다."
@@ -536,6 +536,20 @@
     (filterv #(pos? (cmp-vals order (:sv %) cursor)) items)
     items))
 
+(defn- retry-scope
+  "v0.2.5 :retry — 다시 보낼 scope 전체. 원 scope 가 :include 를 썼으면 실패 채널을 거기서
+  빼고, 아니면 :exclude 에 더한다. 읽을 채널이 하나도 안 남으면 retry 는 없다."
+  [config scope dropped]
+  (when (seq dropped)
+    (let [scope (or scope {})
+          gone  (set dropped)]
+      (if-let [inc (:include scope)]
+        (let [left (vec (remove gone inc))]
+          (when (seq left) {:scope (assoc scope :include left)}))
+        (let [ex   (vec (distinct (concat (:exclude scope) dropped)))
+              left (remove (set ex) (channel-ids config))]
+          (when (seq left) {:scope (assoc scope :exclude ex)}))))))
+
 (defn- answer-query
   "plan = {:mode :question :where :as-of :live :selected :order :src :budget :after}"
   [ctx config plan]
@@ -543,11 +557,11 @@
         order    (:order plan)
         observed (t/format-kst (:now ctx))]
     (if (seq failures)
-      (let [retry (seq (distinct (keep #(when (#{:unreadable :unsupported-time :contract} (:kind %))
-                                          (:channel %)) failures)))]
+      (let [dropped (distinct (keep #(when (#{:unreadable :unsupported-time :contract} (:kind %))
+                                       (:channel %)) failures))]
         (error-envelope ctx {:as-of    (:as-of plan) :live (:live plan) :observed observed
                              :failures failures
-                             :retry    (when retry {:exclude (vec retry)})
+                             :retry    (retry-scope config (get-in plan [:src :q :scope]) dropped)
                              :partial  {:coverage coverage
                                         :items (sort-items order (strip-refs-into failed items))}
                              :budget   (:budget plan)}))
@@ -639,32 +653,70 @@
                                (:source-tz desc) (assoc :source-tz (:source-tz desc))))
                            res)})))
 
-;; ───────────────────────── 자가검증 (I1–I8) ─────────────────────────
+;; ───────────────────────── 자가검증 (I1–I9) ─────────────────────────
+;; 명세 머리의 불변식과 1:1. 각 불변식이 어디서 지켜지는지:
+;;   I1 truncated ⇔ rest        만들 때 success-envelope · 내보내기 전 verify!
+;;   I2 finding 채널 = :ok 커버리지   만들 때 coverage-for · verify! (본 응답과 :partial 둘 다)
+;;   I3 floor ⇒ non-terminal 없음   만들 때 floor? · verify!
+;;   I4 partial ↛ 실패 채널        만들 때 strip-refs-into · verify!
+;;   I5 include∩exclude, 모르는 id   요청 입구 resolve-scope! (:bad-request) — 응답에는 흔적이 없다
+;;   I6 달력·구간                  어댑터 답 check-times! (:contract) · 요청 as-of (:bad-request) · verify! (선의 모든 시각)
+;;   I7 전순서                     어댑터 답의 키 중복 (:contract) · sort-items (인접 비교) — 선에는 :key 가 없다
+;;   I8 uninterpreted ⇒ 빈 findings 어댑터 답 check-answer! (:contract) · 선에서는 I2 가 덮는다
+;;   I9 지식 상한                  어댑터 답 check-times! (:contract) · verify! (선의 finding)
+;; verify! 가 터지면 응답이 아니라 코어 버그다 (CLI exit 4).
 
 (defn- internal! [inv msg data]
   (throw (ex-info (str inv ": " msg) (assoc data :wci/internal inv))))
+
+(defn- wire-times
+  "선에 실린 finding 하나의 [이름 값] 시각들."
+  [f]
+  (let [{:keys [source last-movement expected]} (:times f)]
+    (concat
+     (when source [[:source source]])
+     (cond (and (map? last-movement) (contains? last-movement :before)) [[:last-movement-bound (:before last-movement)]]
+           last-movement [[:last-movement last-movement]])
+     (when expected [[:expected (:at expected)]])
+     (when-let [x (get-in f [:gist :at])] [[:gist x]])
+     (when-let [x (get-in f [:awaits :since])] [[:awaits x]])
+     (for [r (:refs f) :let [la (get-in r [:contact :last-active])] :when (map? la)
+           x [(:at la) (:observed-at la)]]
+       [:contact x]))))
+
+(defn- verify-findings!
+  "I2·I6·I9 를 finding 묶음 하나(본 응답 또는 :partial)에 적용한다."
+  [as-of coverage findings]
+  (let [ok  (set (keep #(when (= :ok (:status %)) (:channel %)) coverage))
+        cut (some-> as-of t/parse-kst)]
+    (doseq [c coverage :let [d (:data-through c)] :when d]
+      (try (t/point-start d) (catch ExceptionInfo e (internal! :I6 (ex-message e) {}))))
+    (doseq [f findings]
+      (when-not (ok (:channel f))                                                  ; I2
+        (internal! :I2 (str "finding from channel without :ok coverage: " (:channel f)) {}))
+      (doseq [[role v] (wire-times f)]
+        (let [{:keys [start]} (try (t/span v) (catch ExceptionInfo e (internal! :I6 (ex-message e) {})))]
+          (when (and cut (#{:source :last-movement :gist :awaits} role) (>= start cut))   ; I9
+            (internal! :I9 (str (name role) " " v " is not before as-of") {})))))))
 
 (defn- verify!
   [resp]
   (when-not (spec/valid? :wci/response resp)
     (internal! :schema "response violates :wci/response" {:explain (spec/explain :wci/response resp)}))
   (doseq [v (concat [(:as-of resp) (:observed-at resp)]
-                    (map :read-at (:coverage resp)))
+                    (map :read-at (concat (:coverage resp) (get-in resp [:partial :coverage]))))
           :when v]
-    (try (t/parse-kst v) (catch ExceptionInfo e (internal! :I6 (ex-message e) {}))))
-  (when (= :success (:outcome resp))
-    (when (contains? resp :findings)
-      (when-not (= (:truncated resp) (contains? resp :rest))
-        (internal! :I1 ":truncated must equal presence of :rest" {}))
-      (let [ok (set (keep #(when (= :ok (:status %)) (:channel %)) (:coverage resp)))]
-        (doseq [f (:findings resp)]
-          (when-not (ok (:channel f))
-            (internal! :I2 (str "finding from channel without :ok coverage: " (:channel f)) {}))))
-      (when (and (:floor resp) (some #(false? (:terminal %)) (mapcat :refs (:findings resp))))
-        (internal! :I3 ":floor true with a non-terminal ref" {}))))
+    (try (t/parse-kst v) (catch ExceptionInfo e (internal! :I6 (ex-message e) {}))))      ; I6
+  (when (and (= :success (:outcome resp)) (contains? resp :findings))
+    (when-not (= (:truncated resp) (contains? resp :rest))                              ; I1
+      (internal! :I1 ":truncated must equal presence of :rest" {}))
+    (verify-findings! (:as-of resp) (:coverage resp) (:findings resp))
+    (when (and (:floor resp) (some #(false? (:terminal %)) (mapcat :refs (:findings resp)))) ; I3
+      (internal! :I3 ":floor true with a non-terminal ref" {})))
   (when-let [p (:partial resp)]
+    (verify-findings! (:as-of resp) (:coverage p) (:findings p))
     (let [failed (set (keep :channel (:failures resp)))]
-      (doseq [f (:findings p)]
+      (doseq [f (:findings p)]                                                          ; I4
         (when (failed (:channel f))
           (internal! :I4 "partial carries a failed channel's finding" {}))
         (when (some #(failed (:channel %)) (:refs f))

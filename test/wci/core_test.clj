@@ -50,7 +50,7 @@
         r (run [a b] {:op :overview})]
     (is (= :error (:outcome r)))
     (is (= [:unreadable] (kinds r)))
-    (is (= {:exclude ["b"]} (:retry r)))
+    (is (= {:scope {:exclude ["b"]}} (:retry r)))
     (testing "I4: no finding or same-as reference into the failed channel"
       (is (= ["a"] (mapv :channel (get-in r [:partial :findings]))))
       (is (= [:more] (mapv :role (get-in r [:partial :findings 0 :refs])))))
@@ -62,7 +62,15 @@
     (testing "every failure is listed, not just the first"
       (let [c (ch "c" nil {:opts {:answer (fn [_] (adapter/fail! :unreadable "no"))}})]
         (is (= [:unreadable :unreadable] (kinds (run [a b c] {:op :overview}))))
-        (is (= {:exclude ["b" "c"]} (:retry (run [a b c] {:op :overview}))))))))
+        (is (= {:scope {:exclude ["b" "c"]}} (:retry (run [a b c] {:op :overview}))))))
+    (testing "retry hands back the whole scope: include shrinks, exclude grows, nothing left means none"
+      (let [c (ch "c" [])]
+        (is (= {:scope {:include ["a" "c"] :as-of "2026-11-25"}}
+               (:retry (run [a b c] {:op :overview :scope {:include ["a" "b" "c"] :as-of "2026-11-25"}}))))
+        (is (= {:scope {:exclude ["c" "b"]}}
+               (:retry (run [a b c] {:op :overview :scope {:exclude ["c"]}}))))
+        (is (nil? (:retry (run [a b c] {:op :overview :scope {:include ["b"]}}))))
+        (is (nil? (:retry (run [a b] {:op :overview :scope {:exclude ["a"]}}))))))))
 
 (deftest adapter-contract-violations-are-errors
   (let [bad (fn [answer] (kinds (run [(ch "a" nil {:opts {:answer (constantly answer)}})] {:op :overview})))]
