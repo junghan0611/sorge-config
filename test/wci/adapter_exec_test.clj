@@ -250,6 +250,21 @@
             (is (not (str/includes? (core/->json r) hidden-key)))
             (is (not (str/includes? (core/->json r) "unknown")))))))))
 
+(deftest get-default-applies-only-to-missing-and-null
+  (with-fake-cli
+   (json/generate-string [{:id 1} {:id 2 :value nil} {:id 3 :value ""} {:id 4 :value "from source"} {:id 5 :value false}])
+   (fn [_ argv]
+     (let [value [:get ["value"] {:default "default"}]
+           ;; Map each case to a legal finding title so false and empty remain observable.
+           title [:enum value {"default" "Missing or null" "" "Empty" "from source" "Original" false "False"}]
+           cfg (config/validate-config
+                {:channels [{:id "default" :kind :exec
+                             :opts {:argv argv :rows-path [] :attests #{}
+                                    :finding [:assemble {:key [:get ["id"]] :title title
+                                                         :times [:literal {}] :refs [:literal []]}]}}]})]
+       (is (= ["Missing or null" "Missing or null" "Empty" "Original" "False"]
+              (mapv :title (:findings (adapter/answer (first (:channels cfg)) live)))))))))
+
 (deftest kst-fractional-clock-requires-explicit-second-floor
   (with-fake-cli
    (json/generate-string [{:id "x" :at "2026-11-25T15:59:59.999999Z"}])

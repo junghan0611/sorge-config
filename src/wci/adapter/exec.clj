@@ -21,6 +21,7 @@
             {::expr [:or
                      [:tuple [:= :get] json-path]
                      [:tuple [:= :get] json-path [:= :optional]]
+                     [:tuple [:= :get] json-path [:map {:closed true} [:default :any]]]
                      [:tuple [:= :literal] :any]
                      [:tuple [:= :enum] [:ref ::expr] [:map-of :any :any]]
                      [:tuple [:= :kst] [:ref ::expr]]
@@ -96,9 +97,11 @@
 (defn- project [data [op arg option branch]]
   (case op
     :get (let [v (lookup data arg)]
-           (when (and (identical? missing v) (not= :optional option))
-             (adapter/fail! :contract "required mapped JSON path is absent"))
-           v)
+           (cond
+             (and (map? option) (or (identical? missing v) (nil? v))) (:default option)
+             (and (identical? missing v) (not= :optional option))
+             (adapter/fail! :contract "required mapped JSON path is absent")
+             :else v))
     :literal arg
     :enum (let [v (project data arg)]
             (cond
