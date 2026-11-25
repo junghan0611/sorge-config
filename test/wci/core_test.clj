@@ -146,7 +146,7 @@
   (let [leaf {:key "leaf" :title "Leaf" :times {:source "2026-11-20"}
               :refs [{:role :record :label "open" :surface {:kind "issue"} :locator "https://x.invalid/1"}
                      {:role :contact :label "ask owner"
-                      :contact {:address {:kind :repo-owner :repo "~/repos/gh/sample"}}}]}
+                      :contact {:address {:kind :repo-owner :cwd "/srv/sample" :repo "sample/repo"}}}]}
         a (ch "a" [(f "x" :refs [{:role :more :label "deeper" :key "leaf"}])]
               {:opts {:expand (fn [k _] (if (= k "leaf") {:findings [leaf]} (adapter/fail! :ref-gone "gone")))}})
         r   (run [a] {:op :overview})
@@ -164,6 +164,38 @@
                    {:opts {:expand (fn [_ _] (adapter/fail! :ref-gone "gone"))}})
           t2 (get-in (run [gone] {:op :overview}) [:findings 0 :refs 0 :ref])]
       (is (= [:ref-gone] (kinds (run [gone] {:op :follow :ref t2})))))))
+
+(deftest overview-keeps-standing-assertions
+  (let [old-ts {:source "2026-09-01T10:00+09:00"}
+        items [(f "log" :times old-ts)
+               (f "card" :times old-ts :gist {:text "Where this stands." :asserted-by "card"})
+               (f "flag" :times old-ts :state {:text "Blocked" :asserted-by "tracker"})
+               (f "wait" :times old-ts :awaits {:who :human :asserted-by "tracker"})]
+        r (run [(ch "a" items)] {:op :overview})]
+    (is (= #{"Item card" "Item flag" "Item wait"} (set (map :title (:findings r))))
+        "an old log line drops out; an old assertion is still the current one")))
+
+(deftest configured-area-groups-and-cross-channel-refs
+  (let [area {:key "sample" :label "Sample repository"}
+        card (f "card" :gist {:text "Where this stands." :asserted-by "card"}
+                :refs [{:role :history :label "Commits behind this card" :key "c1" :channel "log"}])
+        a    (ch "card" [card] {:area area})
+        b    (ch "log" [(f "c1")] {:area area
+                                   :opts {:expand (fn [k _] {:findings [(f k :title "Commit one")]})}})
+        r    (run [a b] {:op :overview})
+        ref  (get-in (first (filter #(= "card" (:channel %)) (:findings r))) [:refs 0])]
+    (is (every? #(= area (:area %)) (:findings r)) "the config attests belonging; the core stamps it")
+    (is (= {:role :history :channel "log"} (select-keys ref [:role :channel])))
+    (let [d (run [a b] {:op :follow :ref (:ref ref)})]
+      (is (= ["Commit one"] (map :title (:findings d))))
+      (is (= "log" (get-in d [:coverage 0 :channel]))))
+    (testing "a ref into a channel this config does not attach is refused, not guessed"
+      (is (= [:forbidden] (kinds (run [a] {:op :follow :ref (:ref ref)})))))
+    (testing "I4: partial evidence drops refs that cross into a failed channel"
+      (let [broken (ch "log" nil {:opts {:answer (fn [_] (adapter/fail! :unreadable "no"))}})
+            p (run [a broken] {:op :overview})]
+        (is (= [:unreadable] (kinds p)))
+        (is (= [] (get-in p [:partial :findings 0 :refs])))))))
 
 (deftest channels-lists-capabilities
   (let [r (run [(ch "a" []) (ch "b" [] {:opts {:describe {:as-of-support :live-only}}})] {:op :channels})]

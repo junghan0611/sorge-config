@@ -121,12 +121,20 @@
         body  (or (when (= :error (:outcome r)) (:partial r)) r)
         cov   (for [c (:coverage body) :when (not (#{:ok} (:status c)))]
                 (str "· " (:channel c) ": " (name (:status c)) (when (:reason c) (str " — " (:reason c)))))
-        fl    (for [f (:findings body)]
+        line  (fn [f]
                 (str (:title f)
                      (when as-of
                        (let [bits (age-bits as-of f)] (when (seq bits) (str " · " (str/join " · " bits)))))
                      " · " (:channel f)
-                     (when-let [g (get-in f [:gist :text])] (str " — " g))))]
+                     (when-let [g (get-in f [:gist :text])] (str " — " g))))
+        ;; 소속(area)이 바뀌는 자리에 머리줄 하나. 같은 리포의 카드와 커밋이 한 덩어리로 읽힌다.
+        fl    (second
+               (reduce (fn [[prev out] f]
+                         (let [a (:area f)]
+                           [a (cond-> out
+                                (and a (not= (:key a) (:key prev))) (conj (str "▸ " (:label a)))
+                                true (conj (line f)))]))
+                       [nil []] (:findings body)))]
     (vec (concat
           (when (= :error (:outcome r))
             (for [f (:failures r)]
@@ -172,7 +180,7 @@
 (defn contact-call
   "contact ref → 그 담당자에게 닿는 호출의 인자 map. 보내지 않는다. 보내는 건 호출자다.
    :garden-id     → 살아 있는 형제에게 entwurf_v2
-   :repo-owner    → 그 리포 cwd 에서 새 형제를 연다
+   :repo-owner    → 그 리포의 로컬 절대경로(:cwd)에서 새 형제를 연다
    :issue-tracker → 그 작업면에 요청을 남긴다"
   [ref]
   (when-not (= :contact (:role ref))
@@ -185,6 +193,7 @@
     (merge base
            (case (:kind address)
              :garden-id     {:via :entwurf-v2 :target (:id address) :intent "fire-and-forget"}
-             :repo-owner    (cond-> {:via :fresh-sibling :cwd (:repo address)}
+             :repo-owner    (cond-> {:via :fresh-sibling :cwd (:cwd address)}
+                              (:repo address)   (assoc :repo (:repo address))
                               (:doc-id address) (assoc :doc-id (:doc-id address)))
              :issue-tracker {:via :issue :url (:url address)}))))

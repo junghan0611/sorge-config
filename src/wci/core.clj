@@ -225,14 +225,15 @@
 
 (defn- overview-match?
   "overview 의 뜻 (코어가 고정한다): horizon 안의 움직임(없으면 원 기록 시각),
-  as-of 앞뒤 horizon 안의 예정, 또는 원천이 단언한 :awaits."
+  as-of 앞뒤 horizon 안의 예정, 또는 원천이 단언한 :awaits·:state·:gist.
+  단언은 다음 단언으로 바뀌기 전까지 현재다 — horizon 과 무관하다 (v0.2.3)."
   [as-of h f]
   (let [lo (t/shift-days as-of (- h))
         hi (t/shift-days as-of h)
         mv (or (role-key f :last-movement) (role-key f :source))
         ex (role-key f :expected)]
     (boolean
-     (or (some? (:awaits f))
+     (or (some? (:awaits f)) (some? (:state f)) (some? (:gist f))
          (and mv (<= lo mv) (< mv as-of))
          (and ex (<= lo ex) (< ex hi))))))
 
@@ -305,8 +306,10 @@
     (:record :contact) (assoc seed :terminal true)
     :same-as {:role :same-as :terminal false :label (:label seed) :channel (:channel seed)
               :ref (seal ctx {:t :ref :c (:channel seed) :k (:key seed) :a as-of :l live})}
-    {:role (:role seed) :terminal false :label (:label seed)
-     :ref (seal ctx {:t :ref :c channel :k (:key seed) :a as-of :l live})}))
+    ;; :more/:history/:evidence/:owner — 시드에 :channel 이 있으면 같은 설정의 다른 채널로 건너간다
+    (cond-> {:role (:role seed) :terminal false :label (:label seed)
+             :ref (seal ctx {:t :ref :c (or (:channel seed) channel) :k (:key seed) :a as-of :l live})}
+      (:channel seed) (assoc :channel (:channel seed)))))
 
 (defn- wire-finding [ctx cut {:keys [channel finding]}]
   (cond-> {:channel channel
@@ -468,6 +471,13 @@
     question (assoc :question question)
     where    (assoc :where where)))
 
+(defn- item
+  "어댑터 finding → 내부 항목. 설정이 증언한 채널 :area 를 area 없는 finding 에 찍는다 (v0.2.3)."
+  [cfg f]
+  {:channel (:id cfg)
+   :finding (if (and (:area cfg) (not (:area f))) (assoc f :area (:area cfg)) f)
+   :key-str (canon (:key f))})
+
 (defn- fan-out
   "선택된 채널을 차례로 부른다. → {:failures [...] :coverage [...] :items [...]}"
   [ctx config {:keys [selected live] :as plan}]
@@ -489,17 +499,18 @@
                (let [[cov kept] (coverage-for id res plan)]
                  (-> acc
                      (update :coverage conj cov)
-                     (update :items into (map (fn [f] {:channel id :finding f :key-str (canon (:key f))}))
+                     (update :items into (map #(item cfg %))
                              kept))))))))
      {:failures [] :failed #{} :coverage [] :items []}
      (:channels config))))
 
 (defn- strip-refs-into
-  "I4: :partial 에 실패 채널로 가는 same-as 를 남기지 않는다."
+  "I4: :partial 에 실패 채널로 건너가는 ref(:same-as, :channel 을 단 follow ref)를 남기지 않는다."
   [failed items]
   (mapv (fn [it] (update-in it [:finding :refs]
-                            (fn [rs] (filterv #(not (and (= :same-as (:role %)) (failed (:channel %)))) rs))))
+                            (fn [rs] (filterv #(not (failed (:channel %))) rs))))
         items))
+
 
 (defn- after-cursor [order cursor items]
   (if cursor
@@ -558,7 +569,7 @@
                                    :failures [f] :budget budget})}
         (let [[cov kept] (coverage-for c res plan)]
           {:as-of as-of :live (boolean l) :coverage [cov]
-           :items (mapv (fn [f] {:channel c :finding f :key-str (canon (:key f))}) kept)})))))
+           :items (mapv #(item cfg %) kept)})))))
 
 (defn- answer-expand [ctx config x order after budget]
   (let [{:keys [env as-of live coverage items]} (expand-once ctx config x budget)]
@@ -637,7 +648,7 @@
       (doseq [f (:findings p)]
         (when (failed (:channel f))
           (internal! :I4 "partial carries a failed channel's finding" {}))
-        (when (some #(and (= :same-as (:role %)) (failed (:channel %))) (:refs f))
+        (when (some #(failed (:channel %)) (:refs f))
           (internal! :I4 "partial carries a reference into a failed channel" {})))))
   resp)
 
