@@ -174,10 +174,11 @@
       (and git-channel at) (update :refs conj {:role :history :label "Commits after this handoff"
                                                :channel git-channel :key (git/history-since-key at)})
       (pos? reads) (update :refs conj {:role :more :label (str "읽을 곳 " reads) :key (reading-key path)})
-      doc-id (update :refs conj {:role :contact :label "Ask the repository owner"
-                                 :contact {:address (cond-> {:kind :repo-owner :cwd root :doc-id doc-id}
-                                                      repo (assoc :repo repo))
-                                           :scope "Repository handoff and owner document"}}))))
+      true (update :refs conj {:role :contact :label "Ask the repository owner"
+                               :contact {:address (cond-> {:kind :repo-owner :cwd root}
+                                                    repo (assoc :repo repo)
+                                                    doc-id (assoc :doc-id doc-id))
+                                         :scope "Repository handoff"}}))))
 
 (defn- version [{:keys [root path repo git-channel] :or {path "NEXT.md"} :as opts} {:keys [live as-of]}]
   (let [ctx (git/context opts)

@@ -112,8 +112,30 @@
        (is (= :history (:role history)))
        (is (= ["Add fixture marker" "Record test specimen" "Prepare test specimen"]
               (mapv :title (:findings followed))))
-       (is (string? (get-in (adapter/answer cfg (assoc live :mode :where :where [[:last-movement :before -7]]))
+       (is (string? (get-in (adapter/answer cfg (assoc live :mode :where
+                                                      :where [[:last-movement :before -7] [:source :after -14]]))
                             [:uninterpreted :reason])))))))
+
+(deftest git-movement-where-has-repository-scope-and-complete-coverage
+  (temp-directory
+   (fn [root]
+     (repo! root)
+     (let [cfg {:channels [(assoc (cfg :git root {}) :area {:key "bench" :label "Bench trials"})]}
+           opts {:now (:as-of live) :token-secret "test-secret-0123456789"}
+           ask (fn [where & [scope]]
+                 (core/run cfg (cond-> {:op :ask :where where} scope (assoc :scope scope)) opts))
+           inactive (ask [[:last-movement :before -1]])
+           active (ask [[:last-movement :before -2]])
+           history (ask [[:last-movement :before -7]] {:as-of (:as-of past)})
+           commits (ask [[:source :after -2]])]
+       (is (= [:success :ok] [(:outcome inactive) (get-in inactive [:coverage 0 :status])]))
+       (is (= (:as-of live) (get-in inactive [:coverage 0 :data-through])))
+       (is (= ["Bench trials"] (mapv :title (:findings inactive))))
+       (is (= :empty (get-in active [:coverage 0 :status])))
+       (is (= "2026-11-16T22:00:00+09:00" (get-in history [:findings 0 :times :last-movement])))
+       (is (= (:as-of past) (get-in history [:coverage 0 :data-through])))
+       (is (= #{"Add fixture marker" "Record test specimen"} (set (map :title (:findings commits)))))
+       (is (every? #(= #{:source} (set (keys (:times %)))) (:findings commits)))))))
 
 (deftest next-adapter-replays-card-links-and-ownership-at-the-same-cut
   (temp-directory
@@ -154,8 +176,12 @@
            (is (= "20000101T020000" (get-in work [:refs 2 :contact :address :doc-id])))
            (is (= historical (adapter/answer cfg past)))))
        (spit (io/file root "NEXT.md") "# A bare handoff card\n")
-       (is (= {:title "A bare handoff card" :times {}}
-              (select-keys (get-in (adapter/answer cfg live) [:findings 0]) [:title :times :gist :state :awaits])))))))
+       (io/delete-file (io/file root "AGENTS.md"))
+       (let [row (get-in (adapter/answer (update cfg :opts dissoc :repo) live) [:findings 0])]
+         (is (= {:title "A bare handoff card" :times {}}
+                (select-keys row [:title :times :gist :state :awaits])))
+         (is (= {:kind :repo-owner :cwd (.getCanonicalPath root)}
+                (get-in row [:refs 1 :contact :address]))))))))
 
 (deftest handoff-skill-variants-do-not-require-current
   (temp-directory
@@ -240,4 +266,7 @@
        (repo! root)
        (git! dir "clone" "--depth=1" (str "file://" (.getAbsolutePath root)) (str shallow))
        (doseq [kind [:git :next-card]]
-         (is (= :unsupported-time (fails-with #(adapter/answer (cfg kind shallow {}) past)))))))))
+         (is (= :unsupported-time (fails-with #(adapter/answer (cfg kind shallow {}) past)))))
+       (is (= :unreadable
+              (fails-with #(adapter/answer (cfg :git shallow {})
+                                           (assoc live :mode :where :where [[:last-movement :before -1]])))))))))

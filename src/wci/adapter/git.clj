@@ -28,27 +28,36 @@
                  :locator (str root "@" oid)}]
                (issue-refs issue-base message))})
 
-(defn- visible [read-records {:keys [opts]} {:keys [live as-of]}]
-  (let [ctx (git/context opts)]
-    (when-not live (git/require-complete! ctx))
-    (filterv #(git/before? (:at %) as-of) (read-records ctx))))
+(defn- visible
+  ([read-records cfg req] (visible read-records cfg req false))
+  ([read-records {:keys [opts]} {:keys [live as-of]} require-coverage?]
+   (let [ctx (git/context opts)]
+     (when (or require-coverage? (not live))
+       (try (git/require-complete! ctx)
+            (catch clojure.lang.ExceptionInfo e
+              (if (and live (= :unsupported-time (:wci/error-kind (ex-data e))))
+                (adapter/fail! :unreadable "configured Git history cannot attest repository movement")
+                (throw e)))))
+     (filterv #(git/before? (:at %) as-of) (read-records ctx)))))
 
 (def ^:private repo-history-key [:git/history])
 
-(defn- overview [{:keys [area title] :as cfg} {:keys [as-of horizon-days] :as req}]
-  (let [rows (visible git/recordings cfg req)
+(defn- repository-answer [{:keys [area title] :as cfg} {:keys [as-of horizon-days] :as req} require-coverage?]
+  (let [rows (visible git/recordings cfg req require-coverage?)
         latest (reduce (fn [best row] (if (or (nil? best) (git/before? best (:at row))) (:at row) best)) nil rows)
         lower (git/shift-days as-of (- horizon-days))
         recent-count (count (remove #(git/before? (:at %) lower) rows))]
-    {:matched-by origin
-     :findings (if latest
-                 [{:key [:git/overview]
-                   :title (or (:label area) title "Git history")
-                   :times {:last-movement latest}
-                   :gist {:text (str recent-count " commits in the last " horizon-days " days")
-                          :asserted-by "Reachable Git history"}
-                   :refs [{:role :history :label "Open commit history" :key repo-history-key}]}]
-                 [])}))
+    (cond-> {:matched-by origin
+             :findings (if latest
+                         [{:key [:git/overview]
+                           :title (or (:label area) title "Git history")
+                           :times {:last-movement latest}
+                           :gist {:text (str recent-count " commits in the last " horizon-days " days")
+                                  :asserted-by "Reachable Git history"}
+                           :refs [{:role :history :label "Open commit history" :key repo-history-key}]}]
+                         [])}
+      ;; Coverage is the configured ref and knowledge cut, not unfetched work.
+      require-coverage? (assoc :data-through as-of))))
 
 (defn- matches? [^String title ^String question]
   (str/includes? (.toLowerCase title Locale/ROOT) (.toLowerCase question Locale/ROOT)))
@@ -60,12 +69,15 @@
    :attests #{:source :last-movement :gist} :contact-liveness :none})
 
 (defmethod adapter/answer :git [{:keys [opts] :as cfg} {:keys [mode question where] :as req}]
-  (if (= :overview mode)
-    (overview cfg req)
-    (let [rows (visible git/commits cfg req)
-          search? (= :question mode)]
-      (if (and (= :where mode) (some #(not= :source (first %)) where))
-        {:findings [] :uninterpreted {:reason "commit records attest only their recording time"}}
+  (let [roles (into #{} (map first) where)]
+    (cond
+      (= :overview mode) (repository-answer cfg req false)
+      (and (= :where mode) (= #{:last-movement} roles)) (repository-answer cfg req true)
+      (and (= :where mode) (some #(not= :source %) roles))
+      {:findings [] :uninterpreted {:reason "repository movement and commit recording time have different query scopes"}}
+      :else
+      (let [rows (visible git/commits cfg req)
+            search? (= :question mode)]
         {:matched-by (str (when search? "title keyword; ") origin)
          :findings (into [] (comp (filter #(or (not search?) (matches? (:title %) question)))
                                  (map #(finding opts %))) rows)}))))
