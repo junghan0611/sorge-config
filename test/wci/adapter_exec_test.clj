@@ -196,6 +196,31 @@
                 (:wci/error-kind (failure-data #(answer (assoc-in cfg [:opts :finding 1 :title]
                                                                   [:when-present value [:literal "Required title"]])))))))))))
 
+(deftest metadata-read-rejects-extra-fields-before-projecting-on-every-call
+  (let [item {:id "one" :label "Synthetic signal" :time "2026-11-26T08:00:00+09:00"
+              :peer {:display "Example author"}}
+        run-opts {:now (:as-of live) :token-secret "test-secret-0123456789"}]
+    (with-fake-cli
+     (json/generate-string [item])
+     (fn [program argv]
+       (let [cfg (config/validate-config
+                  {:channels [{:id "signals" :kind :exec
+                               :opts {:argv argv :rows-path [] :attests #{:source} :overview :summary
+                                      :allowed-json-keys #{"id" "label" "time" "peer" "display"}
+                                      :finding [:assemble {:key [:get ["id"]] :title [:get ["label"]]
+                                                           :times [:assemble {:source [:kst [:get ["time"]]]}]
+                                                           :refs [:literal []]}]}}]})
+             ask (fn [request] (core/run cfg request run-opts))
+             r (ask {:op :overview})
+             ref (get-in r [:findings 0 :refs 0 :ref])]
+         (is (= :success (:outcome r)))
+         (doseq [invalid [(assoc item :body nil) (assoc-in item [:peer :content] "never display this")]]
+           (fake-output! program (json/generate-string [invalid]))
+           (doseq [request [{:op :overview} {:op :follow :ref ref}]]
+             (let [out (ask request)]
+               (is (= [:contract] (mapv :kind (:failures out))))
+               (is (not (str/includes? (core/->json out) "never display this")))))))))))
+
 (deftest malformed-or-incomplete-input-is-an-error-not-false-empty
   (let [source @catalog-text
         run #(failure-data (fn [] (adapter/answer % live)))]

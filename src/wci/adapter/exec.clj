@@ -49,6 +49,7 @@
    [:attests [:set :wci/attest]]
    [:rows-path json-path]
    [:overview {:optional true} [:= :summary]]
+   [:allowed-json-keys {:optional true} [:set {:max 128} [:string {:min 1 :max 120}]]]
    [:finding [:tuple [:= :assemble]
               [:map {:closed true}
                [:key expression] [:title expression] [:times expression] [:refs expression]
@@ -129,9 +130,15 @@
     (when-not (zero? exit) (adapter/fail! :unreadable "local JSON reader exited unsuccessfully"))
     (json/parse-one stdout)))
 
-(defn- mapped-answer [{:keys [argv rows-path finding data-through attests]} {:keys [live]}]
+(defn- check-json-keys! [allowed doc]
+  (doseq [obj (filter map? (tree-seq coll? seq doc))]
+    (when-not (every? allowed (keys obj))
+      (adapter/fail! :contract "local JSON reader returned a field outside the allowed metadata"))))
+
+(defn- mapped-answer [{:keys [argv rows-path finding data-through attests allowed-json-keys]} {:keys [live]}]
   (when-not live (adapter/fail! :unsupported-time "fixed argv source cannot replay past knowledge"))
   (let [doc (read-json! argv)
+        _ (when allowed-json-keys (check-json-keys! allowed-json-keys doc))
         rows (lookup doc rows-path)
         bound (if data-through (project doc data-through) missing)]
     (when-not (vector? rows) (adapter/fail! :contract "mapped JSON rows must be an array"))
