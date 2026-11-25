@@ -1,5 +1,5 @@
 ;; =============================================================================
-;; spec/wci.edn — work-context interface (v0.2.0-draft)
+;; spec/wci.edn — work-context interface (v0.2.1-draft)
 ;; =============================================================================
 ;;
 ;; 이 EDN 하나가 SSOT다. md로 따로 쓰지 않는다. 설명은 주석에 둔다.
@@ -42,12 +42,26 @@
 ;;   I6 모든 시각은 달력상 유효, interval 은 from < to
 ;;   I7 정렬은 :order 체인으로 전순서. 마지막 고리는 [:channel :key]
 ;;   I8 :uninterpreted 답은 findings 가 비어 있다
+;;   I9 지식 상한: 어댑터 finding 의 source·last-movement·gist.at·awaits.since 가
+;;      :as-of 이상이면 :contract (미래 :expected 는 예외)
+;;
+;; 코어 해석 (구현이 정한 것, 036feb5 — 바꾸려면 이슈 스레드에서):
+;;   - overview: 움직임 = last-movement, 없으면 source. :expected 는 as-of±horizon
+;;     대칭(지난 마감도 잡힌다). :awaits 가 있으면 항상 포함.
+;;   - 부재 술어 = [:last-movement :before n]. :data-through 가 없으면 :stale.
+;;     날짜 data-through 는 그날 끝까지 덮는다.
+;;   - {:before p} 는 :before 술어만 만족시킨다(p ≤ 컷). 정렬 키는 p.
+;;   - 정렬 체인 끝은 항상 [:channel :asc] [:key :asc] (:key = 정규화 EDN 문자열).
+;;   - 이어받기는 커서(마지막 항목의 정렬값). live 요청은 다시 읽고, 과거 as-of 는 유지.
+;;     남은 항목이 있는데 예산에 0개만 들어가면 :budget-too-small.
+;;   - 미래 :as-of 는 :bad-request. :retry exclude 는 채널 실패에만.
+;;   - 토큰 키: 설정 :token 또는 env WCI_TOKEN_KEY(≥16자)의 SHA-256. 없으면 기동 에러.
 ;;
 ;; 버전 정책: v0.x 호환 보장 없음. 응답마다 :spec-version 정확히.
-;; CLI exit: 0 success · 1 error 봉투 · 2 호출 위반 · 3 설정/IO
+;; CLI exit: 0 success · 1 error 봉투 · 2 호출 위반 · 3 설정/IO · 4 코어 불변식 위반(버그, stderr)
 ;; =============================================================================
 
-{:spec-version "0.2.0-draft"
+{:spec-version "0.2.1-draft"
 
  :constants
  {:overview-horizon-days 14       ;; overview: as-of 앞뒤 이 범위의 움직임·예정
@@ -64,7 +78,8 @@
   :wci/when     [:or :wci/kst :wci/date :wci/interval]
 
   :wci/channel-id [:re "^[a-z][a-z0-9-]{0,31}$"]
-  :wci/ref-token  [:string {:min 16 :max 1024}]   ;; 불투명. 호출자는 해석하지 않는다
+  :wci/ref-token  [:string {:min 16 :max 4096}]   ;; 불투명. 호출자는 해석하지 않는다
+                                                  ;; rest 토큰은 원 요청(질문 포함)을 품어 길다
   :wci/attester   [:string {:min 1 :max 80}]      ;; 단언한 원천 (사람이 읽는 말)
 
   ;; 시각 역할 — 무엇의 시각인지 섞지 않는다
@@ -273,7 +288,8 @@
    [:partial {:optional true}
     [:map {:closed true}
      [:coverage [:vector :wci/coverage]]
-     [:findings [:vector :wci/finding]]]]]
+     [:findings [:vector :wci/finding]]
+     [:truncated :boolean]]]]                      ;; 예산 때문에 줄였으면 true
 
   :wci/channel-info
   [:map {:closed true}
@@ -284,8 +300,9 @@
    [:question [:enum :keyword :none]]
    [:attests [:set :wci/attest]]
    [:contact-liveness [:enum :show :hide :none]]
-   [:status [:enum :ready :unreadable]]
    [:source-tz {:optional true} :string]]
+  ;; :status 는 뺐다(v0.2.1). describe 는 정적이라 읽기 가능 여부를 알 수 없다.
+  ;; 읽기 실패는 ask/overview 에서 에러 봉투로 드러난다.
 
   :wci/channels
   [:map {:closed true}
@@ -340,6 +357,8 @@
   :channel/finding
   [:map {:closed true}
    [:key :any]                                         ;; 원천 고유 키 (전순서 마지막 고리)
+                                                       ;; EDN 왕복 가능한 값이어야 한다(토큰에 실린다).
+                                                       ;; 아니면 :contract
    [:title [:string {:min 1 :max 200}]]
    [:times :wci/times]
    [:gist {:optional true} :wci/gist]
