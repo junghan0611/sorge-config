@@ -28,7 +28,7 @@
   (testing "a channel can attest every time role a predicate can name"
     (is (every? (spec/enum-values :wci/attest) (spec/enum-values :wci/time-role))))
   (testing "the order chain can name every time role plus the total-order tail"
-    (is (= (into (spec/enum-values :wci/time-role) #{:area :channel :key})
+    (is (= (into (spec/enum-values :wci/time-role) #{:area-movement :area :channel :key})
            (let [f (spec/form :wci/order)] (set (rest (second (nth f 2))))))))
   (testing "every error kind the core emits exists in the spec"
     (is (every? (spec/enum-values :wci/error-kind)

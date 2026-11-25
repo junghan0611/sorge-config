@@ -145,7 +145,9 @@
           cov
           (when (:floor r) ["(floor: nothing further below in this scope)"])))))
 
-(def default-walk-roles #{:more :history :evidence :owner :same-as})
+(def default-walk-roles
+  "깊어지는 고리만. :more(읽을 곳 묶음 등 옆으로 펼치기)는 명시할 때만 따른다 (v0.2.4)."
+  #{:history :evidence :owner :same-as})
 
 (defn walk
   "start(응답 또는 ref) 에서 non-terminal ref 를 깊이 우선으로 따라간다.

@@ -18,8 +18,12 @@
   (let [r (w/ok! (w/overview (c)))]
     (is (spec/valid? :wci/success r))
     (is (= [:ok :ok] [(status r "tracker") (status r "notes")]))
-    (testing "grouped by attested area, then by what is due first"
-      (is (= ["Bench lamp trial" "Dial calibration follow-up" "Hinge fit follow-up"] (take 3 (titles r)))))
+    (testing "what moved most recently comes first; an area stays together, due-first inside it"
+      (is (= [[:area-movement :desc] [:area :asc]] (take 2 (:order r))))
+      (is (= "A new reading on the trial bench" (first (titles r))))
+      (let [ts (titles r) at #(.indexOf ^java.util.List ts %)]
+        (is (= (inc (at "Bench lamp trial")) (at "Dial calibration follow-up")))
+        (is (< (at "Dial calibration follow-up") (at "Hinge fit follow-up")))))
     (testing "the notes channel contributes on its own terms (source time only)"
       (is (some #(= "notes" (:channel %)) (:findings r))))
     (is (<= (count (.getBytes (core/->json r) "UTF-8")) (:default-max-bytes spec/constants)))))

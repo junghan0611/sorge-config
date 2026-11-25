@@ -175,6 +175,16 @@
     (is (= #{"Item card" "Item flag" "Item wait"} (set (map :title (:findings r))))
         "an old log line drops out; an old assertion is still the current one")))
 
+(deftest overview-orders-areas-by-their-latest-movement
+  (let [old {:key "old" :label "Old area"} new {:key "new" :label "New area"}
+        mv  (fn [k t a] (f k :times {:last-movement t} :area a))
+        r   (run [(ch "a" [(mv "o1" "2026-11-14T10:00+09:00" old) (mv "o2" "2026-11-24T10:00+09:00" old)
+                           (mv "n1" "2026-11-22T10:00+09:00" new)
+                           (f "solo" :times {:source "2026-11-23T10:00+09:00"})])]
+                 {:op :overview})]
+    (is (= ["Item o2" "Item o1" "Item solo" "Item n1"] (map :title (:findings r)))
+        "the old area moved today, so the whole area leads, kept together")))
+
 (deftest configured-area-groups-and-cross-channel-refs
   (let [area {:key "sample" :label "Sample repository"}
         card (f "card" :gist {:text "Where this stands." :asserted-by "card"}

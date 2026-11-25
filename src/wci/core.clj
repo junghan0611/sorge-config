@@ -249,7 +249,8 @@
   [mode where]
   (dedupe-by-field
    (case mode
-     :overview (into [[:area :asc] [:expected :asc] [:last-movement :desc] [:source :desc]] tail)
+     ;; v0.2.4: 오늘 움직인 영역이 먼저. [:area :asc] 는 같은 시각의 두 영역을 갈라 덩어리를 지킨다.
+     :overview (into [[:area-movement :desc] [:area :asc] [:expected :asc] [:last-movement :desc] [:source :desc]] tail)
      :where    (-> (for [[role op] where :when (not= role :awaits)]
                      [role (cond (= role :expected) :asc
                                  (= op :before)     :asc
@@ -259,8 +260,9 @@
                    (into tail))
      (into [[:last-movement :desc] [:source :desc]] tail))))
 
-(defn- sort-val [{:keys [channel finding key-str]} field]
+(defn- sort-val [{:keys [channel finding key-str] :as it} field]
   (case field
+    :area-movement (:area-mv it)
     :area          (get-in finding [:area :key])
     :expected      (role-key finding :expected)
     :last-movement (or (role-key finding :last-movement) (lm-bound finding))
@@ -284,8 +286,25 @@
                     :else (cond-> (compare x y) (= dir :desc) -))]
         (if (zero? c) (recur (inc i)) c)))))
 
+(defn- movement
+  "한 finding 의 움직임 = max(last-movement(상한 포함), source). 없으면 nil."
+  [f]
+  (let [xs (keep identity [(role-key f :last-movement) (lm-bound f) (role-key f :source)])]
+    (when (seq xs) (apply max xs))))
+
+(defn- with-area-movement
+  "v0.2.4 :area-movement — area 안의 최신 움직임. area 없는 finding 은 자기 움직임이 곧 그 값."
+  [items]
+  (let [by-area (reduce (fn [m {:keys [finding]}]
+                          (let [k (get-in finding [:area :key]) mv (movement finding)]
+                            (if (and k mv) (update m k #(if % (max % mv) mv)) m)))
+                        {} items)]
+    (mapv (fn [{:keys [finding] :as it}]
+            (assoc it :area-mv (if-let [k (get-in finding [:area :key])] (get by-area k) (movement finding))))
+          items)))
+
 (defn- sort-items [order items]
-  (let [keyed (mapv #(assoc % :sv (sort-vals order %)) items)
+  (let [keyed (mapv #(assoc % :sv (sort-vals order %)) (with-area-movement items))
         sorted (vec (sort #(cmp-vals order (:sv %1) (:sv %2)) keyed))]
     (doseq [[a b] (partition 2 1 sorted)]
       (when-not (neg? (cmp-vals order (:sv a) (:sv b)))
