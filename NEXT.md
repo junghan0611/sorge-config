@@ -6,15 +6,14 @@
 
 - [x] **1. forge-config → sorge-config 이름 변경** — 현재 origin과 디렉터리 확인.
 - [x] **2. 전환 방향·소유 경계 인계** — 이번 세션은 NEXT 정리만; 구현하지 않음.
-- [ ] **3. 공개 측 역할 전환 범위 확정** ← CURRENT: 다음 GLG 재개 요청 때 현행 계약과 rename 잔여부터 읽기.
-- [ ] **4. 승인된 수선·일반 절차 이관 및 검증** ← PAUSED: 범위·실행 승인 전에는 이관/설치/활성화하지 않음.
+- [x] **3. 얼개 공개 계약과 MVP** — 합성·독립 소비자·첫 실제 채널 검증 완료.
+- [ ] **4. 운영 사용에서 공통 문제 검증** ← CURRENT: 소비자가 운영하는 설정으로 사용하고 재현 가능한 공통 문제만 공개 이슈에 남긴다.
 
 # NOW — forge 중심 공방에서 sorge 공개 연결면으로
 
-- Current: 리포 이름은 `sorge-config`지만 본문·CLI·스킬은 아직 기존 forge 운영 모델이다. `sorge`로 이 리포를 다시 개명하는 일이 아니라, private sorge와 짝을 이루는 공개 설정/절차 자리로 전환할 준비다.
-- Next: GLG가 재개하면 (1) 아래 Read와 실제 링크/설정을 읽어 현황 재측정 → (2) rename 수선과 역할 전환을 분리해 최소 변경 범위 제안 → (3) GLG와 공개 범위를 정한 뒤 실행.
-- Verify: 승인된 변경 후 단일 스킬 실물·하네스 진입점·CLI 예문 경로가 일치하는지 확인. credential helper 경로 존재와 실제 인증 검증은 별도 축으로 기록하고, 링크 복구를 인증 성공으로 승격하지 않는다.
-- Blocker: 환경 차단이 아니라 다음 실행 범위 승인 대기. 이번 요청은 NEXT 문서의 commit/push만.
+- Current: 얼개 MVP의 공개 계약·CLI는 이 리포에, 개인·업무 채널 선택과 운영 설정은 소비자 리포에 둔다. [독립 재현 통과](https://github.com/junghan0611/sorge-config/issues/2#issuecomment-7174635123).
+- Next: 소비자가 준비한 단일 설정으로 사용하며 공통 계약의 빈칸만 [공개 이슈](https://github.com/junghan0611/sorge-config/issues/2)에 비식별 사례로 남긴다. 기존 forge rename 잔여 수선은 별도다.
+- Verify: `spec/wci.edn`의 사용법과 합성 예제로 질의·참조가 재현되고, 인계 원문과 그 뒤 움직임이 혼동되지 않는지 본다.
 - Read: `AGENTS.md`, `README.md`, `.claude/skills/forge/SKILL.md`, `bin/forge`, `bin/git-credential-forge`, `.github/agents/forge-config.agent.md`; 필요시 private 측 담당 코디에게 최신 계약을 다시 요청.
 - Do not touch: 비공개 운영 데이터·실제 대상 목록·엔드포인트·인증 정보·대화 원문을 공개 issue/commit/NEXT로 복사하지 않는다. private 이력 통째 이관, 별도 스킬 사본, 자동 전달/구현/merge, 전역설정 일괄변경 금지.
 

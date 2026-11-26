@@ -23,6 +23,12 @@
   "cfg, 어댑터가 준 ref :key, :channel/request(mode :follow) → :channel/answer"
   (fn [cfg _key _req] (:kind cfg)))
 
+(defmulti ref-label
+  "Optional label for an already selected cross-channel reference; nil keeps its original label."
+  (fn [cfg _seed _cut] (:kind cfg)))
+
+(defmethod ref-label :default [_ _ _] nil)
+
 (defn fail!
   "채널 실패를 계약대로 던진다. kind 는 :wci/error-kind 중 하나."
   ([kind msg] (fail! kind msg nil))

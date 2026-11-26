@@ -577,6 +577,17 @@
         items))
 
 
+(defn- label-attached-refs [config coverage as-of items]
+  (let [ok (into #{} (keep #(when (= :ok (:status %)) (:channel %))) coverage)
+        targets (into {} (map (juxt :id identity)) (filter #(ok (:id %)) (:channels config)))
+        label (memoize (fn [seed]
+                        (when-let [target (targets (:channel seed))]
+                          (adapter/ref-label target seed {:as-of (t/format-kst as-of)}))))]
+    (mapv (fn [item]
+            (update-in item [:finding :refs]
+                       (fn [refs] (mapv #(if-let [text (label %)] (assoc % :label text) %) refs))))
+          items)))
+
 (defn- after-cursor [order cursor items]
   (if cursor
     (filterv #(pos? (cmp-vals order (:sv %) cursor)) items)
@@ -613,7 +624,8 @@
                              :budget   (:budget plan)}))
       (success-envelope ctx {:as-of (:as-of plan) :live (:live plan) :observed observed
                              :coverage coverage :order order
-                             :items (after-cursor order (:after plan) (sort-items order items))
+                             :items (label-attached-refs config coverage (:as-of plan)
+                                                         (after-cursor order (:after plan) (sort-items order items)))
                              :src (:src plan) :budget (:budget plan)}))))
 
 (defn- query-plan [ctx config {:keys [op question where scope budget]}]

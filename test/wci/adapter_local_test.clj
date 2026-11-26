@@ -226,6 +226,13 @@
            find-ref (fn [result role] (first (filter #(= role (:role %)) (get-in result [:findings 0 :refs]))))
            history (find-ref (overview) :history)]
        (is (= "fixture-git" (:channel history)))
+       (is (= "Commits after this handoff" (:label history)) "an excluded target isn't read for a count")
+       (let [both (ask {:op :overview})
+             counted (some #(when (= "fixture-git" (:channel %)) %)
+                           (mapcat :refs (:findings both)))
+             followed (ask {:op :follow :ref (:ref counted)})]
+         (is (= "Commits after this handoff (1)" (:label counted)))
+         (is (= 1 (count (:findings followed)))))
        (is (= ["Add fixture marker"] (mapv :title (:findings (ask {:op :follow :ref (:ref history)})))))
        (let [file (io/file root "NEXT.md")
              targets (map #(str "`docs/item-" % ".md`") (range 6))]

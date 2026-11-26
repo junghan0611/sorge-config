@@ -2,6 +2,9 @@
 channels.local.edn
 *.local.edn
 
+# 로컬 형제 책갈피
+/team.json
+
 # Clojure
 .cpcache/
 .nrepl-port

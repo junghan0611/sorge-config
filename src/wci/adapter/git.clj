@@ -82,11 +82,27 @@
          :findings (into [] (comp (filter #(or (not search?) (matches? (:title %) question)))
                                  (map #(finding opts %))) rows)}))))
 
+(defn- history-since? [key]
+  (and (vector? key) (= 2 (count key)) (= :git/history-since (first key)) (string? (second key))))
+
+(defmethod adapter/ref-label :git [{:keys [opts]} {:keys [role key]} {:keys [as-of]}]
+  (when (and (= :history role) (history-since? key))
+    (try
+      (let [ctx (git/context opts)
+            _ (git/require-complete! ctx)
+            n (transduce (filter #(and (git/before? (second key) (:at %))
+                                       (git/before? (:at %) as-of)))
+                         (completing (fn [n _] (inc n))) 0 (git/recordings ctx))]
+        (str "Commits after this handoff (" n ")"))
+      (catch clojure.lang.ExceptionInfo e
+        (when-not (#{:unreadable :unsupported-time} (:wci/error-kind (ex-data e)))
+          (throw e))))))
+
 (defmethod adapter/expand :git [{:keys [opts] :as cfg} key req]
   (let [rows (visible git/commits cfg req)]
     (cond
       (= key repo-history-key) {:matched-by origin :findings (mapv #(finding opts %) rows)}
-      (and (vector? key) (= 2 (count key)) (= :git/history-since (first key)) (string? (second key)))
+      (history-since? key)
       {:matched-by (str origin "; newer than handoff")
        :findings (into [] (comp (filter #(git/before? (second key) (:at %))) (map #(finding opts %))) rows)}
       :else (if-let [commit (some #(when (= key (:oid %)) %) rows)]
